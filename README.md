@@ -10,8 +10,8 @@
 
 | 电脑 | 下载哪个 | 系统要求 |
 | --- | --- | --- |
-| Mac（Apple 芯片和 Intel 芯片都可以） | `Web Manager_0.3.0_universal.dmg` | macOS 14 及以上 |
-| Windows | `Web Manager_0.3.0_windows_x64.zip` | Windows 10 / 11，64 位 |
+| Mac（Apple 芯片和 Intel 芯片都可以） | `Web.Manager_0.3.0_universal.dmg` | macOS 14 及以上 |
+| Windows | `Web.Manager_0.3.0_windows_x64.zip` | Windows 10 / 11，64 位 |
 
 ## 安装
 
