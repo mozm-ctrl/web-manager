@@ -10,8 +10,8 @@
 
 | 电脑 | 下载哪个 | 系统要求 |
 | --- | --- | --- |
-| Mac（Apple 芯片和 Intel 芯片都可以） | `Web.Manager_0.3.0_universal.dmg` | macOS 14 及以上 |
-| Windows | `Web.Manager_0.3.0_windows_x64.zip` | Windows 10 / 11，64 位 |
+| Mac（Apple 芯片和 Intel 芯片都可以） | `Web.Manager_0.4.0_universal.dmg` | macOS 14 及以上 |
+| Windows | `Web.Manager_0.4.0_windows_x64.zip` | Windows 10 / 11，64 位 |
 
 ## 安装
 
@@ -38,6 +38,7 @@
 5. **浏览**：顶部有后退、前进、刷新、回首页按钮和地址栏，可以直接输入网址跳转。
 6. **记住账号密码**：鼠标移到账号上点 🔑（或打开网页后点工具栏上的 🔑），填写账号、密码、备注后保存。之后可以随时查看，点「显示」看密码，点「复制」粘贴到登录框。
 7. **改名 / 删除**：鼠标移到网站或账号上，点 ✎ 修改，点 ✕ 删除。删除账号会同时清除它的登录数据和保存的密码。
+8. **一键清除所有数据**：左侧栏最下方点「清除所有数据」，确认后会删除所有网站、账号、登录状态和保存的账号密码，app 回到刚安装时的状态。
 
 ![](docs/5-tabs.png)
 
@@ -70,7 +71,7 @@
 | 每个账号的 Cookie 和网页缓存 | `~/Library/WebKit/com.mozm.webmanager/` | `%APPDATA%\com.mozm.webmanager\profiles\` |
 | 保存的账号密码 | 钥匙串（搜索 `com.mozm.webmanager`） | 凭据管理器（搜索 `com.mozm.webmanager`） |
 
-直接删除 app 不会删除这些数据；想彻底清理，先在 app 里删掉所有网站，再删除上面这些位置。
+直接删除 app 不会删除这些数据。想彻底清理，先在 app 左下角点「清除所有数据」，再把 app 删掉即可。
 
 ## 已知限制
 

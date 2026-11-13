@@ -527,6 +527,37 @@ fn close_tab(app: AppHandle, tab_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Deletes every site and account together with their browser data and saved logins.
+#[tauri::command]
+async fn clear_all_data(app: AppHandle) -> Result<(), String> {
+    let ids = {
+        let state = app.state::<AppState>();
+        let mut store = state.store.lock().unwrap();
+        let ids = store
+            .sites
+            .iter()
+            .flat_map(|s| s.accounts.iter().map(|a| a.id))
+            .collect::<Vec<_>>();
+        store.sites.clear();
+        state.save(&store)?;
+        ids
+    };
+    *app.state::<AppState>().active.lock().unwrap() = None;
+    delete_accounts_data(&app, ids).await;
+
+    // Also drop data stores left behind by accounts that no longer exist.
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(stores) = app.fetch_data_store_identifiers().await {
+            for id in stores {
+                let _ = app.remove_data_store(id).await;
+            }
+        }
+    }
+    apply_visibility(&app);
+    Ok(())
+}
+
 #[tauri::command]
 fn close_active(app: AppHandle) {
     *app.state::<AppState>().active.lock().unwrap() = None;
@@ -660,6 +691,7 @@ pub fn run() {
             navigate_tab,
             get_credential,
             set_credential,
+            clear_all_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

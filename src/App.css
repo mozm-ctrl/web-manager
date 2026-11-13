@@ -353,3 +353,20 @@ button.primary.danger {
 button.icon.tab-close {
   padding: 0 5px;
 }
+
+.sidebar-footer {
+  padding: 8px;
+  border-top: 1px solid var(--border);
+}
+
+button.clear-all {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+}
+
+button.clear-all:hover {
+  background: #ffebe9;
+  color: var(--danger);
+}

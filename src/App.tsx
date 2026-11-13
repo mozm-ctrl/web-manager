@@ -208,6 +208,27 @@ function App() {
             {error}
           </div>
         )}
+        <div className="sidebar-footer">
+          <button
+            className="clear-all"
+            aria-label="清除所有数据"
+            onClick={() =>
+              setDialog({
+                kind: "confirm",
+                message: "清除所有网站、账号、登录状态和保存的账号密码？清除后无法恢复。",
+                onConfirm: async () => {
+                  await api.clearAllData();
+                  setActiveId(null);
+                  setTabs({});
+                  setPages({});
+                  await refresh();
+                },
+              })
+            }
+          >
+            清除所有数据
+          </button>
+        </div>
       </aside>
 
       <main className="main">
