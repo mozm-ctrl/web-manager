@@ -41,7 +41,23 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
-产物在 `src-tauri/target/release/bundle/`（macOS 为 `.app` 和 `.dmg`）。未签名的 `.app` 首次打开需要在「系统设置 → 隐私与安全性」里允许。
+同时支持 Intel 和 Apple 芯片的 Mac 通用包：
+
+```bash
+rustup target add x86_64-apple-darwin aarch64-apple-darwin
+pnpm tauri build --target universal-apple-darwin
+```
+
+在 Mac 上交叉编译 Windows 版（免安装的单个 `.exe`，Windows 10/11 自带 WebView2 即可运行）：需要 `cargo install cargo-xwin`，以及 PATH 里有 `clang-cl`、`lld-link`、`llvm-lib`、`llvm-rc`（LLVM 工具链）。
+
+```bash
+rustup target add x86_64-pc-windows-msvc
+pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle
+```
+
+`ci/release.yml` 是 GitHub Actions 工作流，会在真实的 macOS / Windows 机器上打出安装包并挂到草稿 Release。启用方法：把它移到 `.github/workflows/release.yml`（推送需要带 `workflow` 权限的 token，或直接在 GitHub 网页上新建该文件），然后在 Actions 页面手动运行，或推送 `v*` 标签。
+
+默认构建的产物在 `src-tauri/target/release/bundle/`（macOS 为 `.app` 和 `.dmg`）。未签名的 `.app` 首次打开需要在「系统设置 → 隐私与安全性」里允许。
 
 只想要一个可运行的调试版二进制（不打安装包）：
 
@@ -52,6 +68,7 @@ pnpm tauri build --debug --no-bundle
 
 ## 已知限制
 
+- **Windows 版只做了交叉编译，没有在真机上运行过**。
 - **macOS 13 及以下无法隔离**：`data_store_identifier` 需要 macOS 14+，低版本上所有账号会共用默认数据存储。打包配置里最低系统版本设为 14.0。
 - **弹窗登录**：`target=_blank` / `window.open` 打开的页面会变成该账号的新标签页，但新标签页拿不到 `window.opener`，依赖它回传结果的 OAuth 弹窗登录（部分「用 Google / 微信登录」）可能无法完成。
 - 打开的对话框会临时隐藏右侧网页（原生 WebView 总是在 HTML 界面之上）。
@@ -75,3 +92,7 @@ pnpm tauri build --debug --no-bundle
 账号密码备忘：
 
 ![](docs/4-credential.png)
+
+多标签页（「新窗口打开」的链接变成同账号的新标签，仍是登录状态）：
+
+![](docs/5-tabs.png)
