@@ -1,98 +1,119 @@
 ## Web Manager · 网页管理器
 
-一个桌面端的多网站、多账号管理器（Tauri 2 + Rust + React）。左侧维护网站和账号，右侧用**每个账号独立的浏览器数据环境**打开网站——同一个网站可以同时登录两三个号，Cookie / LocalStorage / 登录态互不影响，重启后依然保留。
+一个桌面端的多网站、多账号管理器。左侧管理网站和账号，右侧用**每个账号独立的浏览器环境**打开网站：同一个网站可以同时登录好几个号，Cookie 和登录状态互不影响，切换账号不用退出重登，关掉 app 再打开也还是登录状态。
 
-- 左侧栏：网站列表，每个网站下挂账号；顶部 ＋ 添加网站，网站行上的 ＋ 新增账号，✎ 编辑 / 重命名，✕ 删除
-- 右侧：点击账号即打开；顶部有后退 / 前进 / 刷新 / 回首页和地址栏
-- 多标签页：每个账号可以开多个标签页（＋ 新建，× 关闭），同一账号的标签页共享登录状态；网页里「新窗口打开」的链接会作为该账号的新标签页打开
-- 🔑 账号密码备忘：每个账号可以记下登录用的账号、密码和备注，随时查看、一键复制。保存在**系统钥匙串**（macOS Keychain / Windows 凭据管理器 / Linux Secret Service），不写进 `sites.json`
-- 删除账号（或删除网站）时一并清除该账号的浏览器数据和保存的账号密码
+![](docs/2-account-b-bob.png)
 
-## 账号隔离原理
+## 下载
 
-每个账号有一个固定的 UUID，对应一个独立的 WebView 数据存储：
+到 [Releases](https://github.com/mozm-ctrl/web-manager/releases/latest) 页面下载：
 
-| 平台 | 实现 | 数据位置 |
+| 电脑 | 下载哪个 | 系统要求 |
 | --- | --- | --- |
-| macOS 14+ | `WebviewBuilder::data_store_identifier(uuid)`（WKWebsiteDataStore） | `~/Library/WebKit/<bundle id>/WebsiteDataStore/<uuid>/` |
-| Windows / Linux | `WebviewBuilder::data_directory(<app data>/profiles/<uuid>)` | 应用数据目录下的 `profiles/<uuid>/` |
+| Mac（Apple 芯片和 Intel 芯片都可以） | `Web Manager_0.3.0_universal.dmg` | macOS 14 及以上 |
+| Windows | `Web Manager_0.3.0_windows_x64.zip` | Windows 10 / 11，64 位 |
 
-网站和账号列表保存在应用数据目录的 `sites.json`（macOS 为 `~/Library/Application Support/com.mozm.webmanager/`）。
+## 安装
 
-账号页面是挂在主窗口上的原生子 WebView（Tauri `unstable` 特性的 `Window::add_child`），只加载远程网站，**没有** Tauri IPC 权限（capability 只授予本地侧栏 `main` webview）。
+### Mac
+1. 双击 `.dmg`，在弹出的窗口里把 **Web Manager** 拖进「应用程序」。
+2. 在访达侧栏点安装盘旁边的 ⏏ 推出安装盘（不推出的话启动台里会出现两个图标）。
+3. 第一次打开时，系统会提示「无法验证开发者」或「已损坏」。这是因为安装包没有花钱做 Apple 签名，app 本身没有问题。放行方法二选一：
+   - 「系统设置 → 隐私与安全性」拉到底部，点 **仍要打开**；
+   - 或者在终端执行：`xattr -dr com.apple.quarantine "/Applications/Web Manager.app"`
+4. 第一次保存或查看账号密码时，系统可能会问是否允许访问钥匙串，点「始终允许」。
 
-## 环境要求
+### Windows
+1. 解压 zip，把 `Web Manager.exe` 放到一个固定的文件夹，双击运行，不需要安装。
+2. 如果弹出「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」（同样是因为没有购买代码签名证书）。
 
-- macOS 14 Sonoma 及以上（账号隔离依赖 macOS 14 的 WKWebsiteDataStore 标识符）；Windows 10/11（WebView2）、Linux（WebKitGTK）理论支持，尚未实测
-- [Rust](https://rustup.rs/) stable（开发时用的是 1.100）
-- Node.js 20+ 和 pnpm 9+
-- 各平台的 Tauri 系统依赖：见 <https://tauri.app/start/prerequisites/>（macOS 只需 Xcode Command Line Tools）
+> ⚠️ Windows 版是在 Mac 上交叉编译的，还没有在真机上完整测试过。遇到问题欢迎提 Issue。
 
-## 开发
+## 使用说明
+
+1. **添加网站**：点左上角 ＋，填名称和网址（比如 `GitHub`、`https://github.com`）。
+2. **添加账号**：鼠标移到网站那一行，点右侧的 ＋，给账号起个备注名（比如「工作号」「生活号」）。一个网站可以加任意多个账号。
+3. **登录**：点左侧某个账号，右边就会打开网站，在里面正常登录一次。之后点哪个账号就是哪个号，登录状态一直保留。
+4. **多标签页**：打开账号后，网页上方有标签栏，＋ 新建标签，× 关闭。同一账号的标签页共享登录状态；网页里「在新窗口打开」的链接会变成这个账号的新标签页。
+5. **浏览**：顶部有后退、前进、刷新、回首页按钮和地址栏，可以直接输入网址跳转。
+6. **记住账号密码**：鼠标移到账号上点 🔑（或打开网页后点工具栏上的 🔑），填写账号、密码、备注后保存。之后可以随时查看，点「显示」看密码，点「复制」粘贴到登录框。
+7. **改名 / 删除**：鼠标移到网站或账号上，点 ✎ 修改，点 ✕ 删除。删除账号会同时清除它的登录数据和保存的密码。
+
+![](docs/5-tabs.png)
+
+![](docs/4-credential.png)
+
+## 主要用到的技术
+
+| 部分 | 用了什么 | 作用 |
+| --- | --- | --- |
+| 应用框架 | [Tauri 2](https://tauri.app/)（Rust） | 创建窗口、把网页嵌进窗口、调用系统功能 |
+| 界面 | React + TypeScript + Vite | 左侧网站/账号列表、标签栏、对话框 |
+| 网页引擎（Mac） | 系统自带的 WebKit（Safari 的引擎） | 显示网页、保存 Cookie |
+| 网页引擎（Windows） | 系统自带的 WebView2（Edge / Chromium 内核） | 显示网页、保存 Cookie |
+| 账号隔离 | Mac：`WKWebsiteDataStore` 独立数据仓库（macOS 14+）；Windows：每个账号单独的 WebView2 数据目录 | 每个账号一份 Cookie / LocalStorage，互不干扰 |
+| 密码保存 | [keyring](https://crates.io/crates/keyring)：Mac 钥匙串 / Windows 凭据管理器 | 由系统加密保存账号密码 |
+
+因为网页引擎用的是系统自带的，安装包只有几 MB。
+
+### 账号隔离原理
+
+网站靠浏览器里存的 Cookie 认出「你是谁」。普通浏览器里一个网站只有一份 Cookie，所以登录第二个号会把第一个顶掉。这个 app 给每个账号分配一个固定编号（UUID），再用这个编号向系统网页引擎申请一个独立的数据仓库。每个账号的网页只能读写自己的仓库，所以对网站来说，就像是几台不同电脑上的浏览器。
+
+### 数据存在哪里
+
+所有数据只在本机，不会上传：
+
+| 内容 | Mac | Windows |
+| --- | --- | --- |
+| 网站和账号列表（不含密码） | `~/Library/Application Support/com.mozm.webmanager/sites.json` | `%APPDATA%\com.mozm.webmanager\sites.json` |
+| 每个账号的 Cookie 和网页缓存 | `~/Library/WebKit/com.mozm.webmanager/` | `%APPDATA%\com.mozm.webmanager\profiles\` |
+| 保存的账号密码 | 钥匙串（搜索 `com.mozm.webmanager`） | 凭据管理器（搜索 `com.mozm.webmanager`） |
+
+直接删除 app 不会删除这些数据；想彻底清理，先在 app 里删掉所有网站，再删除上面这些位置。
+
+## 已知限制
+
+- 只隔离登录状态，**不隔离 IP 和设备特征**。风控严格的平台（电商、社交媒体等）仍可能识别出多个账号属于同一个人。
+- Mac 需要 macOS 14 及以上，更低版本无法隔离账号。
+- 依赖弹窗回传结果的第三方登录（部分「用 Google / 微信登录」）可能无法完成，可以改用账号密码登录。
+- 标签页不会在重启后恢复（登录状态会保留）；打开的标签页都常驻内存，开很多会变卡。
+- 账号密码只能查看和复制，不会自动填写；查看前不需要额外验证。
+- 打开对话框时右侧网页会暂时隐藏。
+- 安装包未签名，首次打开需要手动放行。
+
+## 从源码构建
+
+需要 [Rust](https://rustup.rs/)、Node.js 20+、pnpm 9+，以及 [Tauri 的系统依赖](https://tauri.app/start/prerequisites/)（Mac 只需 Xcode Command Line Tools）。
 
 ```bash
 pnpm install
-pnpm tauri dev
+pnpm tauri dev      # 开发模式运行
+pnpm tauri build    # 打包当前平台的安装包
 ```
 
-## 打包
-
-```bash
-pnpm tauri build
-```
-
-同时支持 Intel 和 Apple 芯片的 Mac 通用包：
+Mac 通用包（Intel + Apple 芯片）：
 
 ```bash
 rustup target add x86_64-apple-darwin aarch64-apple-darwin
 pnpm tauri build --target universal-apple-darwin
 ```
 
-在 Mac 上交叉编译 Windows 版（免安装的单个 `.exe`，Windows 10/11 自带 WebView2 即可运行）：需要 `cargo install cargo-xwin`，以及 PATH 里有 `clang-cl`、`lld-link`、`llvm-lib`、`llvm-rc`（LLVM 工具链）。
+在 Mac 上交叉编译 Windows 版：需要 `cargo install cargo-xwin`，以及 PATH 里有 `clang-cl`、`lld-link`、`llvm-lib`、`llvm-rc`。
 
 ```bash
 rustup target add x86_64-pc-windows-msvc
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle
 ```
 
-`ci/release.yml` 是 GitHub Actions 工作流，会在真实的 macOS / Windows 机器上打出安装包并挂到草稿 Release。启用方法：把它移到 `.github/workflows/release.yml`（推送需要带 `workflow` 权限的 token，或直接在 GitHub 网页上新建该文件），然后在 Actions 页面手动运行，或推送 `v*` 标签。
+`ci/release.yml` 是 GitHub Actions 工作流，可以在真实的 Mac / Windows 机器上打包并挂到 Release。启用方法：把它复制到 `.github/workflows/release.yml`，然后在 Actions 页面手动运行或推送 `v*` 标签。
 
-默认构建的产物在 `src-tauri/target/release/bundle/`（macOS 为 `.app` 和 `.dmg`）。未签名的 `.app` 首次打开需要在「系统设置 → 隐私与安全性」里允许。
+### 代码结构
 
-只想要一个可运行的调试版二进制（不打安装包）：
-
-```bash
-pnpm tauri build --debug --no-bundle
-./src-tauri/target/debug/web-manager
-```
-
-## 已知限制
-
-- **Windows 版只做了交叉编译，没有在真机上运行过**。
-- **macOS 13 及以下无法隔离**：`data_store_identifier` 需要 macOS 14+，低版本上所有账号会共用默认数据存储。打包配置里最低系统版本设为 14.0。
-- **弹窗登录**：`target=_blank` / `window.open` 打开的页面会变成该账号的新标签页，但新标签页拿不到 `window.opener`，依赖它回传结果的 OAuth 弹窗登录（部分「用 Google / 微信登录」）可能无法完成。
-- 打开的对话框会临时隐藏右侧网页（原生 WebView 总是在 HTML 界面之上）。
-- 标签页只在本次运行期间存在，重启 app 后每个账号回到一个首页标签（登录状态仍保留）。打开的标签页都常驻内存，开得多会变卡。
-- 账号密码只用于查看和复制，**不会自动填进网页**。
-- 账号密码保存在钥匙串里，能登录这台电脑的人打开 app 就能看到，app 本身没有额外的解锁密码。
-- 安装包未签名，换成新版本后第一次读取钥匙串时，macOS 可能弹窗询问是否允许访问，点「始终允许」即可。
-- 暂不支持下载管理、自定义 User-Agent。
-- Windows 上 WebView2 可能短暂锁住数据目录，删除失败时会记到 `pendingPurge`，下次启动再清理。
-
-## 截图
-
-同一网站的两个账号分别登录（本地 Cookie 测试站），互不影响：
-
-| 生活号 → Alice | 工作号 → Bob |
+| 文件 | 内容 |
 | --- | --- |
-| ![](docs/1-account-a-alice.png) | ![](docs/2-account-b-bob.png) |
-
-![](docs/3-github.png)
-
-账号密码备忘：
-
-![](docs/4-credential.png)
-
-多标签页（「新窗口打开」的链接变成同账号的新标签，仍是登录状态）：
-
-![](docs/5-tabs.png)
+| `src-tauri/src/lib.rs` | 后端：账号 WebView、标签页、账号隔离、删除清理 |
+| `src-tauri/src/store.rs` | 网站和账号列表的读写（`sites.json`） |
+| `src-tauri/src/credentials.rs` | 账号密码读写系统钥匙串 |
+| `src/App.tsx`、`src/App.css` | 界面 |
+| `src/api.ts` | 界面调用后端的接口 |
