@@ -1,3 +1,4 @@
+mod credentials;
 mod store;
 
 use std::path::PathBuf;
@@ -124,6 +125,9 @@ async fn purge_account_data(app: &AppHandle, account_id: Uuid) -> Result<(), Str
 async fn delete_accounts_data(app: &AppHandle, ids: Vec<Uuid>) {
     let state = app.state::<AppState>();
     for id in ids {
+        if let Err(e) = credentials::delete(id) {
+            eprintln!("failed to delete saved login for account {id}: {e}");
+        }
         {
             let mut active = state.active.lock().unwrap();
             if *active == Some(id) {
@@ -420,10 +424,27 @@ fn navigate_account(app: AppHandle, id: String, action: String, url: Option<Stri
     .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_credential(id: String) -> Result<Option<credentials::Credential>, String> {
+    credentials::get(parse_id(&id)?)
+}
+
+#[tauri::command]
+fn set_credential(
+    state: State<'_, AppState>,
+    id: String,
+    credential: credentials::Credential,
+) -> Result<(), String> {
+    let id = parse_id(&id)?;
+    state.store.lock().unwrap().account_mut(id).ok_or("账号不存在")?;
+    credentials::set(id, &credential)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -471,6 +492,8 @@ pub fn run() {
             set_content_bounds,
             set_overlay,
             navigate_account,
+            get_credential,
+            set_credential,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

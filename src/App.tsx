@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { api, type Account, type PageInfo, type Site } from "./api";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { api, type Account, type Credential, type PageInfo, type Site } from "./api";
 import "./App.css";
 
 type DialogState =
@@ -8,6 +9,7 @@ type DialogState =
   | { kind: "editSite"; site: Site }
   | { kind: "addAccount"; site: Site }
   | { kind: "renameAccount"; account: Account }
+  | { kind: "credential"; account: Account }
   | { kind: "confirm"; message: string; onConfirm: () => Promise<void> };
 
 function App() {
@@ -149,6 +151,14 @@ function App() {
                         {acc.name}
                       </button>
                       <span className="row-actions" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          className="icon"
+                          title="账号密码"
+                          aria-label={`账号密码 ${acc.name}`}
+                          onClick={() => setDialog({ kind: "credential", account: acc })}
+                        >
+                          🔑
+                        </button>
                         <button className="icon" title="重命名" aria-label={`重命名 ${acc.name}`} onClick={() => setDialog({ kind: "renameAccount", account: acc })}>
                           ✎
                         </button>
@@ -201,6 +211,14 @@ function App() {
               <button className="icon" title="回到首页" aria-label="回到首页" onClick={() => run(() => api.navigate(active.account.id, "home"))}>
                 ⌂
               </button>
+              <button
+                className="icon"
+                title="查看此账号保存的账号密码"
+                aria-label="查看账号密码"
+                onClick={() => setDialog({ kind: "credential", account: active.account })}
+              >
+                🔑
+              </button>
               <AddressBar
                 key={active.account.id}
                 url={page?.url ?? active.site.url}
@@ -225,7 +243,11 @@ function App() {
         </div>
       </main>
 
-      {dialog && <Dialog state={dialog} onClose={() => setDialog(null)} onDone={refresh} run={run} />}
+      {dialog?.kind === "credential" ? (
+        <CredentialDialog account={dialog.account} onClose={() => setDialog(null)} />
+      ) : (
+        dialog && <Dialog state={dialog} onClose={() => setDialog(null)} onDone={refresh} run={run} />
+      )}
     </div>
   );
 }
@@ -246,13 +268,132 @@ function AddressBar({ url, onGo }: { url: string; onGo: (url: string) => void })
   );
 }
 
+function CredentialDialog({ account, onClose }: { account: Account; onClose: () => void }) {
+  const [cred, setCred] = useState<Credential>({ username: "", password: "", note: "" });
+  const [loaded, setLoaded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [reveal, setReveal] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .getCredential(account.id)
+      .then((c) => {
+        if (c) setCred(c);
+        else setEditing(true);
+        setLoaded(true);
+      })
+      .catch((e) => {
+        setMessage(String(e));
+        setLoaded(true);
+      });
+  }, [account.id]);
+
+  const copy = async (label: string, text: string) => {
+    try {
+      await writeText(text);
+      setMessage(`已复制${label}`);
+    } catch (e) {
+      setMessage(String(e));
+    }
+  };
+
+  const save = async () => {
+    try {
+      await api.setCredential(account.id, cred);
+      setEditing(false);
+      setReveal(false);
+      setMessage("已保存到系统钥匙串");
+    } catch (e) {
+      setMessage(String(e));
+    }
+  };
+
+  const field = (key: keyof Credential, label: string, placeholder: string, secret = false) => (
+    <label>
+      {label}
+      <div className="field-row">
+        <input
+          type={secret && !reveal ? "password" : "text"}
+          value={cred[key]}
+          readOnly={!editing}
+          onChange={(e) => setCred((c) => ({ ...c, [key]: e.target.value }))}
+          placeholder={editing ? placeholder : ""}
+          aria-label={label}
+          spellCheck={false}
+          autoComplete="off"
+        />
+        {secret && (
+          <button type="button" aria-label={reveal ? "隐藏密码" : "显示密码"} onClick={() => setReveal((r) => !r)}>
+            {reveal ? "隐藏" : "显示"}
+          </button>
+        )}
+        {!editing && key !== "note" && (
+          <button
+            type="button"
+            aria-label={`复制${label}`}
+            disabled={!cred[key]}
+            onClick={() => copy(label, cred[key])}
+          >
+            复制
+          </button>
+        )}
+      </div>
+    </label>
+  );
+
+  return (
+    <div className="backdrop" onClick={onClose}>
+      <form
+        className="dialog"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (editing) save();
+        }}
+      >
+        <h3>「{account.name}」的账号密码</h3>
+        {loaded && (
+          <>
+            {field("username", "账号", "用户名 / 邮箱 / 手机号")}
+            {field("password", "密码", "密码", true)}
+            {field("note", "备注", "可选，如密保问题提示")}
+          </>
+        )}
+        <p className="hint-text">{message ?? "保存在系统钥匙串里，不会写进 sites.json。"}</p>
+        <div className="dialog-actions">
+          {editing ? (
+            <>
+              <button type="button" onClick={onClose}>
+                取消
+              </button>
+              <button type="submit" className="primary">
+                保存
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" onClick={() => setEditing(true)}>
+                编辑
+              </button>
+              <button type="button" className="primary" onClick={onClose}>
+                关闭
+              </button>
+            </>
+          )}
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function Dialog({
   state,
   onClose,
   onDone,
   run,
 }: {
-  state: DialogState;
+  state: Exclude<DialogState, { kind: "credential" }>;
   onClose: () => void;
   onDone: () => Promise<void>;
   run: (fn: () => Promise<unknown>) => Promise<void>;

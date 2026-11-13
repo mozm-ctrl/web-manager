@@ -4,7 +4,8 @@
   "description": "Only the local sidebar UI (webview \"main\") may call commands; account webviews load remote sites and get no IPC access.",
   "permissions": [
     "core:default",
-    "opener:default"
+    "opener:default",
+    "clipboard-manager:allow-write-text"
   ],
   "webviews": [
     "main"

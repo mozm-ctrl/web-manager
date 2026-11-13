@@ -19,6 +19,12 @@ export interface PageInfo {
   loading: boolean;
 }
 
+export interface Credential {
+  username: string;
+  password: string;
+  note: string;
+}
+
 export type NavAction = "back" | "forward" | "reload" | "home" | "go";
 
 export const api = {
@@ -44,4 +50,7 @@ export const api = {
   setOverlay: (visible: boolean) => invoke<void>("set_overlay", { visible }),
   navigate: (id: string, action: NavAction, url?: string) =>
     invoke<void>("navigate_account", { id, action, url }),
+  getCredential: (id: string) => invoke<Credential | null>("get_credential", { id }),
+  setCredential: (id: string, credential: Credential) =>
+    invoke<void>("set_credential", { id, credential }),
 };

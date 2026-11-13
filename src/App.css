@@ -282,3 +282,22 @@ button.primary.danger {
   background: var(--danger);
   border-color: var(--danger);
 }
+
+.field-row {
+  display: flex;
+  gap: 6px;
+}
+
+.field-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.field-row input[readonly] {
+  background: #f6f8fa;
+}
+
+.dialog .hint-text {
+  color: var(--muted);
+  font-size: 12px;
+}
