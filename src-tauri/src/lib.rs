@@ -1,6 +1,7 @@
 mod credentials;
 mod store;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -33,13 +34,31 @@ struct AppState {
     /// Per-account browser data directories (Windows / Linux only).
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     profiles_dir: PathBuf,
+    /// Account currently shown on the right.
     active: Mutex<Option<Uuid>>,
+    /// Open tabs per account (runtime only). All tabs of an account share its data store.
+    tabs: Mutex<HashMap<Uuid, AccountTabs>>,
     bounds: Mutex<Bounds>,
     /// When true (e.g. a dialog is open in the sidebar UI) the active account webview is hidden.
     overlay: Mutex<bool>,
 }
 
+#[derive(Default)]
+struct AccountTabs {
+    tabs: Vec<Uuid>,
+    active: Option<Uuid>,
+}
+
 impl AppState {
+    fn account_of_tab(&self, tab_id: Uuid) -> Option<Uuid> {
+        self.tabs
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, t)| t.tabs.contains(&tab_id))
+            .map(|(acc, _)| *acc)
+    }
+
     fn save(&self, store: &Store) -> Result<(), String> {
         store.save(&self.store_path)
     }
@@ -49,17 +68,51 @@ impl AppState {
 #[serde(rename_all = "camelCase")]
 struct PageInfo {
     account_id: String,
+    tab_id: String,
     url: String,
     title: Option<String>,
     loading: bool,
 }
 
-fn webview_label(account_id: &Uuid) -> String {
-    format!("acc-{}", account_id.simple())
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TabsInfo {
+    account_id: String,
+    tabs: Vec<String>,
+    active_tab: Option<String>,
 }
 
-fn account_webview(app: &AppHandle, account_id: &Uuid) -> Option<Webview> {
-    app.get_webview(&webview_label(account_id))
+fn webview_label(tab_id: &Uuid) -> String {
+    format!("tab-{}", tab_id.simple())
+}
+
+fn tab_webview(app: &AppHandle, tab_id: &Uuid) -> Option<Webview> {
+    app.get_webview(&webview_label(tab_id))
+}
+
+fn emit_tabs(app: &AppHandle, account_id: Uuid) {
+    let state = app.state::<AppState>();
+    let info = {
+        let tabs = state.tabs.lock().unwrap();
+        let t = tabs.get(&account_id);
+        TabsInfo {
+            account_id: account_id.to_string(),
+            tabs: t.map(|t| t.tabs.iter().map(Uuid::to_string).collect()).unwrap_or_default(),
+            active_tab: t.and_then(|t| t.active).map(|id| id.to_string()),
+        }
+    };
+    let _ = app.emit_to("main", "account-tabs", info);
+}
+
+/// Closes every tab webview of an account.
+fn close_account_tabs(app: &AppHandle, account_id: Uuid) {
+    let state = app.state::<AppState>();
+    let removed = state.tabs.lock().unwrap().remove(&account_id);
+    for tab in removed.map(|t| t.tabs).unwrap_or_default() {
+        if let Some(wv) = tab_webview(app, &tab) {
+            let _ = wv.close();
+        }
+    }
 }
 
 fn rect(b: Bounds) -> Rect {
@@ -85,9 +138,7 @@ fn parse_url(raw: &str) -> Result<Url, String> {
 
 /// Removes everything the browser engine stored for an account.
 async fn purge_account_data(app: &AppHandle, account_id: Uuid) -> Result<(), String> {
-    if let Some(wv) = account_webview(app, &account_id) {
-        wv.close().map_err(|e| e.to_string())?;
-    }
+    close_account_tabs(app, account_id);
 
     #[cfg(target_os = "macos")]
     {
@@ -145,12 +196,13 @@ async fn delete_accounts_data(app: &AppHandle, ids: Vec<Uuid>) {
     }
 }
 
-fn emit_page(app: &AppHandle, account_id: Uuid, url: &Url, title: Option<String>, loading: bool) {
+fn emit_page(app: &AppHandle, account_id: Uuid, tab_id: Uuid, url: &Url, title: Option<String>, loading: bool) {
     let _ = app.emit_to(
         "main",
         "account-page",
         PageInfo {
             account_id: account_id.to_string(),
+            tab_id: tab_id.to_string(),
             url: url.to_string(),
             title,
             loading,
@@ -158,35 +210,95 @@ fn emit_page(app: &AppHandle, account_id: Uuid, url: &Url, title: Option<String>
     );
 }
 
-fn build_account_webview(app: &AppHandle, site: &Site, account: &Account) -> Result<Webview, String> {
+/// Pages ask for a new tab by navigating to this URL (see `NEW_TAB_SCRIPT`).
+const NEW_TAB_PREFIX: &str = "https://new-tab.web-manager.invalid/?u=";
+
+/// WKWebView does not reliably report `target=_blank` clicks for child webviews,
+/// so route them (and `window.open`) through a navigation we can intercept.
+const NEW_TAB_SCRIPT: &str = r#"(() => {
+  const PREFIX = "https://new-tab.web-manager.invalid/?u=";
+  const openTab = (u) => {
+    try { u = new URL(u, location.href).href; } catch (_) { return; }
+    location.href = PREFIX + encodeURIComponent(u);
+  };
+  document.addEventListener("click", (e) => {
+    if (e.defaultPrevented || e.button !== 0) return;
+    const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
+    if (!a) return;
+    const t = (a.getAttribute("target") || "").toLowerCase();
+    if (t === "_blank" || e.metaKey) {
+      e.preventDefault();
+      openTab(a.href);
+    }
+  }, true);
+  window.open = (u) => { if (u) openTab(String(u)); return null; };
+})();"#;
+
+fn site_url_of(app: &AppHandle, account_id: Uuid) -> Result<Url, String> {
     let state = app.state::<AppState>();
-    let url = parse_url(&site.url)?;
-    let account_id = account.id;
-    let label = webview_label(&account_id);
+    let store = state.store.lock().unwrap();
+    let site = store
+        .sites
+        .iter()
+        .find(|s| s.accounts.iter().any(|a| a.id == account_id))
+        .ok_or("账号不存在")?;
+    parse_url(&site.url)
+}
+
+/// Opens a new tab for the account (at `url`, or the site's home page) and makes it active.
+fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid, String> {
+    let state = app.state::<AppState>();
+    let url = match url {
+        Some(u) => u,
+        None => site_url_of(app, account_id)?,
+    };
+    let tab_id = Uuid::new_v4();
+    let label = webview_label(&tab_id);
 
     let app_for_popup = app.clone();
-    let popup_label = label.clone();
+    let app_for_nav = app.clone();
     let app_for_load = app.clone();
     let app_for_title = app.clone();
 
     #[allow(unused_mut)]
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
-        .on_page_load(move |wv, payload| {
+        .initialization_script(NEW_TAB_SCRIPT)
+        .on_navigation(move |url| {
+            let Some(rest) = url.as_str().strip_prefix(NEW_TAB_PREFIX) else {
+                return true;
+            };
+            let target = Url::parse(rest)
+                .ok()
+                .or_else(|| url.query_pairs().find(|(k, _)| k == "u").and_then(|(_, v)| Url::parse(&v).ok()));
+            if let Some(target) = target.filter(|u| matches!(u.scheme(), "http" | "https")) {
+                let app = app_for_nav.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(e) = open_tab(&app, account_id, Some(target)) {
+                        eprintln!("failed to open new tab: {e}");
+                    }
+                });
+            }
+            false
+        })
+        .on_page_load(move |_wv, payload| {
             let loading = matches!(payload.event(), PageLoadEvent::Started);
-            let _ = wv;
-            emit_page(&app_for_load, account_id, payload.url(), None, loading);
+            emit_page(&app_for_load, account_id, tab_id, payload.url(), None, loading);
         })
         .on_document_title_changed(move |wv, title| {
             if let Ok(url) = wv.url() {
-                emit_page(&app_for_title, account_id, &url, Some(title), false);
+                emit_page(&app_for_title, account_id, tab_id, &url, Some(title), false);
             }
         })
-        // Open target=_blank / window.open links in the same account webview so they
-        // keep this account's cookies.
+        // target=_blank / window.open become a new tab of the same account, so they
+        // keep this account's cookies. Building a webview blocks on the main thread,
+        // which is where this handler runs, so do it from a worker.
         .on_new_window(move |url, _features| {
-            if let Some(wv) = app_for_popup.get_webview(&popup_label) {
-                let _ = wv.navigate(url);
-            }
+            let app = app_for_popup.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(e) = open_tab(&app, account_id, Some(url)) {
+                    eprintln!("failed to open new tab: {e}");
+                }
+            });
             NewWindowResponse::Deny
         });
 
@@ -209,18 +321,29 @@ fn build_account_webview(app: &AppHandle, site: &Site, account: &Account) -> Res
             LogicalPosition::new(b.x, b.y),
             LogicalSize::new(b.width.max(1.0), b.height.max(1.0)),
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    {
+        let mut tabs = state.tabs.lock().unwrap();
+        let t = tabs.entry(account_id).or_default();
+        t.tabs.push(tab_id);
+        t.active = Some(tab_id);
+    }
+    emit_tabs(app, account_id);
+    apply_visibility(app);
+    Ok(tab_id)
 }
 
 fn apply_visibility(app: &AppHandle) {
     let state = app.state::<AppState>();
     let active = *state.active.lock().unwrap();
     let overlay = *state.overlay.lock().unwrap();
-    let store = state.store.lock().unwrap();
-    for site in &store.sites {
-        for acc in &site.accounts {
-            if let Some(wv) = account_webview(app, &acc.id) {
-                if Some(acc.id) == active && !overlay {
+    let tabs = state.tabs.lock().unwrap();
+    for (account_id, t) in tabs.iter() {
+        for tab in &t.tabs {
+            if let Some(wv) = tab_webview(app, tab) {
+                if Some(*account_id) == active && t.active == Some(*tab) && !overlay {
+                    let _ = wv.set_bounds(rect(*state.bounds.lock().unwrap()));
                     let _ = wv.show();
                 } else {
                     let _ = wv.hide();
@@ -336,31 +459,70 @@ async fn delete_account(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Shows the account's webview (creating it on first use) and hides the others.
+/// Shows the account's active tab (opening a first tab on first use) and hides the others.
 #[tauri::command]
 async fn open_account(app: AppHandle, id: String) -> Result<(), String> {
     let id = parse_id(&id)?;
     let state = app.state::<AppState>();
-    if account_webview(&app, &id).is_none() {
-        let (site, account) = {
-            let store = state.store.lock().unwrap();
-            let site = store
-                .sites
-                .iter()
-                .find(|s| s.accounts.iter().any(|a| a.id == id))
-                .ok_or("账号不存在")?;
-            let account = site.accounts.iter().find(|a| a.id == id).unwrap().clone();
-            (site.clone(), account)
-        };
-        build_account_webview(&app, &site, &account)?;
-    }
     *state.active.lock().unwrap() = Some(id);
-    if let Some(wv) = account_webview(&app, &id) {
-        let _ = wv.set_bounds(rect(*state.bounds.lock().unwrap()));
-        if let Ok(url) = wv.url() {
-            emit_page(&app, id, &url, None, false);
+    let has_tabs = state.tabs.lock().unwrap().get(&id).is_some_and(|t| !t.tabs.is_empty());
+    if has_tabs {
+        emit_tabs(&app, id);
+        apply_visibility(&app);
+    } else {
+        open_tab(&app, id, None)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn new_tab(app: AppHandle, account_id: String) -> Result<String, String> {
+    let account_id = parse_id(&account_id)?;
+    *app.state::<AppState>().active.lock().unwrap() = Some(account_id);
+    open_tab(&app, account_id, None).map(|id| id.to_string())
+}
+
+#[tauri::command]
+fn select_tab(app: AppHandle, tab_id: String) -> Result<(), String> {
+    let tab_id = parse_id(&tab_id)?;
+    let state = app.state::<AppState>();
+    let account_id = state.account_of_tab(tab_id).ok_or("标签页不存在")?;
+    if let Some(t) = state.tabs.lock().unwrap().get_mut(&account_id) {
+        t.active = Some(tab_id);
+    }
+    *state.active.lock().unwrap() = Some(account_id);
+    emit_tabs(&app, account_id);
+    apply_visibility(&app);
+    Ok(())
+}
+
+/// Closes a tab; the neighbouring tab becomes active. Closing the last tab leaves the
+/// account with no open page.
+#[tauri::command]
+fn close_tab(app: AppHandle, tab_id: String) -> Result<(), String> {
+    let tab_id = parse_id(&tab_id)?;
+    let state = app.state::<AppState>();
+    let account_id = state.account_of_tab(tab_id).ok_or("标签页不存在")?;
+    {
+        let mut tabs = state.tabs.lock().unwrap();
+        let t = tabs.get_mut(&account_id).unwrap();
+        let idx = t.tabs.iter().position(|x| *x == tab_id).unwrap();
+        t.tabs.remove(idx);
+        if t.active == Some(tab_id) {
+            t.active = t.tabs.get(idx.min(t.tabs.len().saturating_sub(1))).copied();
+        }
+        if t.tabs.is_empty() {
+            tabs.remove(&account_id);
+            let mut active = state.active.lock().unwrap();
+            if *active == Some(account_id) {
+                *active = None;
+            }
         }
     }
+    if let Some(wv) = tab_webview(&app, &tab_id) {
+        let _ = wv.close();
+    }
+    emit_tabs(&app, account_id);
     apply_visibility(&app);
     Ok(())
 }
@@ -384,9 +546,11 @@ fn set_content_bounds(app: AppHandle, mut bounds: Bounds) {
         }
     }
     *state.bounds.lock().unwrap() = bounds;
-    let active = *state.active.lock().unwrap();
-    if let Some(wv) = active.and_then(|id| account_webview(&app, &id)) {
-        let _ = wv.set_bounds(rect(bounds));
+    let tabs = state.tabs.lock().unwrap();
+    for tab in tabs.values().flat_map(|t| t.tabs.iter()) {
+        if let Some(wv) = tab_webview(&app, tab) {
+            let _ = wv.set_bounds(rect(bounds));
+        }
     }
 }
 
@@ -397,9 +561,9 @@ fn set_overlay(app: AppHandle, visible: bool) {
 }
 
 #[tauri::command]
-fn navigate_account(app: AppHandle, id: String, action: String, url: Option<String>) -> Result<(), String> {
-    let id = parse_id(&id)?;
-    let wv = account_webview(&app, &id).ok_or("账号页面未打开")?;
+fn navigate_tab(app: AppHandle, tab_id: String, action: String, url: Option<String>) -> Result<(), String> {
+    let tab_id = parse_id(&tab_id)?;
+    let wv = tab_webview(&app, &tab_id).ok_or("标签页未打开")?;
     match action.as_str() {
         "back" => wv.eval("history.back()"),
         "forward" => wv.eval("history.forward()"),
@@ -408,13 +572,11 @@ fn navigate_account(app: AppHandle, id: String, action: String, url: Option<Stri
             let target = match url {
                 Some(u) => parse_url(&u)?,
                 None => {
-                    let store = app.state::<AppState>().store.lock().unwrap().clone();
-                    let site = store
-                        .sites
-                        .iter()
-                        .find(|s| s.accounts.iter().any(|a| a.id == id))
-                        .ok_or("账号不存在")?;
-                    parse_url(&site.url)?
+                    let account_id = app
+                        .state::<AppState>()
+                        .account_of_tab(tab_id)
+                        .ok_or("标签页不存在")?;
+                    site_url_of(&app, account_id)?
                 }
             };
             wv.navigate(target)
@@ -457,6 +619,7 @@ pub fn run() {
                 store_path,
                 profiles_dir,
                 active: Mutex::new(None),
+                tabs: Mutex::new(HashMap::new()),
                 bounds: Mutex::new(Bounds::default()),
                 overlay: Mutex::new(false),
             });
@@ -491,7 +654,10 @@ pub fn run() {
             close_active,
             set_content_bounds,
             set_overlay,
-            navigate_account,
+            new_tab,
+            select_tab,
+            close_tab,
+            navigate_tab,
             get_credential,
             set_credential,
         ])

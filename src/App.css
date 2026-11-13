@@ -301,3 +301,55 @@ button.primary.danger {
   color: var(--muted);
   font-size: 12px;
 }
+
+.tabbar {
+  height: 34px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 0 8px;
+  background: #f6f8fa;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  max-width: 200px;
+  min-width: 90px;
+  height: 28px;
+  padding: 0 2px 0 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--muted);
+}
+
+.tab:hover {
+  background: var(--hover);
+}
+
+.tab.active {
+  background: #fff;
+  border-color: var(--border);
+  color: #1f2328;
+}
+
+.tab-title {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.icon.tab-close {
+  padding: 0 5px;
+}

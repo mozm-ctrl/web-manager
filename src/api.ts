@@ -14,9 +14,16 @@ export interface Site {
 
 export interface PageInfo {
   accountId: string;
+  tabId: string;
   url: string;
   title: string | null;
   loading: boolean;
+}
+
+export interface TabsInfo {
+  accountId: string;
+  tabs: string[];
+  activeTab: string | null;
 }
 
 export interface Credential {
@@ -48,8 +55,11 @@ export const api = {
   }) =>
     invoke<void>("set_content_bounds", { bounds }),
   setOverlay: (visible: boolean) => invoke<void>("set_overlay", { visible }),
-  navigate: (id: string, action: NavAction, url?: string) =>
-    invoke<void>("navigate_account", { id, action, url }),
+  newTab: (accountId: string) => invoke<string>("new_tab", { accountId }),
+  selectTab: (tabId: string) => invoke<void>("select_tab", { tabId }),
+  closeTab: (tabId: string) => invoke<void>("close_tab", { tabId }),
+  navigate: (tabId: string, action: NavAction, url?: string) =>
+    invoke<void>("navigate_tab", { tabId, action, url }),
   getCredential: (id: string) => invoke<Credential | null>("get_credential", { id }),
   setCredential: (id: string, credential: Credential) =>
     invoke<void>("set_credential", { id, credential }),

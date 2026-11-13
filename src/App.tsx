@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { api, type Account, type Credential, type PageInfo, type Site } from "./api";
+import { api, type Account, type Credential, type PageInfo, type Site, type TabsInfo } from "./api";
 import "./App.css";
 
 type DialogState =
@@ -16,7 +16,10 @@ function App() {
   const [sites, setSites] = useState<Site[]>([]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [activeId, setActiveId] = useState<string | null>(null);
+  // Keyed by tab id.
   const [pages, setPages] = useState<Record<string, PageInfo>>({});
+  // Keyed by account id.
+  const [tabs, setTabs] = useState<Record<string, TabsInfo>>({});
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -37,14 +40,22 @@ function App() {
     const unlisten = listen<PageInfo>("account-page", ({ payload }) => {
       setPages((p) => ({
         ...p,
-        [payload.accountId]: {
+        [payload.tabId]: {
           ...payload,
-          title: payload.title ?? p[payload.accountId]?.title ?? null,
+          title: payload.title ?? p[payload.tabId]?.title ?? null,
         },
       }));
     });
+    const unlistenTabs = listen<TabsInfo>("account-tabs", ({ payload }) => {
+      setTabs((t) => ({ ...t, [payload.accountId]: payload }));
+      // Closing an account's last tab leaves nothing to show.
+      if (payload.tabs.length === 0) {
+        setActiveId((cur) => (cur === payload.accountId ? null : cur));
+      }
+    });
     return () => {
       unlisten.then((f) => f());
+      unlistenTabs.then((f) => f());
     };
   }, [refresh]);
 
@@ -86,7 +97,11 @@ function App() {
   const active = sites
     .flatMap((s) => s.accounts.map((a) => ({ site: s, account: a })))
     .find((x) => x.account.id === activeId);
-  const page = activeId ? pages[activeId] : undefined;
+  const accountTabs = activeId ? tabs[activeId] : undefined;
+  const activeTab = accountTabs?.activeTab ?? null;
+  const page = activeTab ? pages[activeTab] : undefined;
+  const nav = (action: "back" | "forward" | "reload" | "home") =>
+    activeTab && run(() => api.navigate(activeTab, action));
 
   return (
     <div className="app">
@@ -199,16 +214,16 @@ function App() {
         <div className="toolbar">
           {active ? (
             <>
-              <button className="icon" title="后退" aria-label="后退" onClick={() => run(() => api.navigate(active.account.id, "back"))}>
+              <button className="icon" title="后退" aria-label="后退" onClick={() => nav("back")}>
                 ←
               </button>
-              <button className="icon" title="前进" aria-label="前进" onClick={() => run(() => api.navigate(active.account.id, "forward"))}>
+              <button className="icon" title="前进" aria-label="前进" onClick={() => nav("forward")}>
                 →
               </button>
-              <button className="icon" title="刷新" aria-label="刷新" onClick={() => run(() => api.navigate(active.account.id, "reload"))}>
+              <button className="icon" title="刷新" aria-label="刷新" onClick={() => nav("reload")}>
                 ⟳
               </button>
-              <button className="icon" title="回到首页" aria-label="回到首页" onClick={() => run(() => api.navigate(active.account.id, "home"))}>
+              <button className="icon" title="回到首页" aria-label="回到首页" onClick={() => nav("home")}>
                 ⌂
               </button>
               <button
@@ -220,9 +235,9 @@ function App() {
                 🔑
               </button>
               <AddressBar
-                key={active.account.id}
+                key={activeTab ?? active.account.id}
                 url={page?.url ?? active.site.url}
-                onGo={(url) => run(() => api.navigate(active.account.id, "go", url))}
+                onGo={(url) => activeTab && run(() => api.navigate(activeTab, "go", url))}
               />
               <span className="badge" title={page?.title ?? ""}>
                 {active.site.name} · {active.account.name}
@@ -233,6 +248,42 @@ function App() {
             <span className="hint">选择左侧的账号打开网站</span>
           )}
         </div>
+        {active && (
+          <div className="tabbar">
+            {(accountTabs?.tabs ?? []).map((tabId) => {
+              const p = pages[tabId];
+              const label = p?.title || (p?.url ? hostOf(p.url) : "新标签页");
+              return (
+                <div key={tabId} className={`tab ${tabId === activeTab ? "active" : ""}`} title={p?.url}>
+                  <button
+                    className="tab-title"
+                    aria-label={`标签 ${label}`}
+                    onClick={() => run(() => api.selectTab(tabId))}
+                  >
+                    {p?.loading ? "⋯ " : ""}
+                    {label}
+                  </button>
+                  <button
+                    className="icon tab-close"
+                    title="关闭标签页"
+                    aria-label={`关闭标签 ${label}`}
+                    onClick={() => run(() => api.closeTab(tabId))}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })}
+            <button
+              className="icon"
+              title="新建标签页"
+              aria-label="新建标签页"
+              onClick={() => run(() => api.newTab(active.account.id))}
+            >
+              ＋
+            </button>
+          </div>
+        )}
         <div className="content" ref={contentRef}>
           {!active && (
             <div className="placeholder">
@@ -250,6 +301,14 @@ function App() {
       )}
     </div>
   );
+}
+
+function hostOf(url: string) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
 }
 
 function AddressBar({ url, onGo }: { url: string; onGo: (url: string) => void }) {
