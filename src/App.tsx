@@ -15,6 +15,8 @@ type DialogState =
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 520;
+// macOS draws the traffic lights over our own title bar (titleBarStyle "Overlay").
+const IS_MAC = navigator.userAgent.includes("Mac");
 
 function App() {
   const [sites, setSites] = useState<Site[]>([]);
@@ -31,7 +33,14 @@ function App() {
     const saved = Number(localStorage.getItem("sidebarWidth"));
     return saved >= SIDEBAR_MIN && saved <= SIDEBAR_MAX ? saved : 260;
   });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "1");
   const contentRef = useRef<HTMLDivElement>(null);
+
+  const toggleSidebar = () =>
+    setSidebarCollapsed((c) => {
+      localStorage.setItem("sidebarCollapsed", c ? "0" : "1");
+      return !c;
+    });
 
   const refresh = useCallback(async () => setSites(await api.listSites()), []);
 
@@ -114,8 +123,18 @@ function App() {
     activeTab && run(() => api.navigate(activeTab, action));
 
   return (
-    <div className="app">
+    <div className={`app ${IS_MAC ? "mac" : ""} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <button
+        className="icon sidebar-toggle"
+        title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+        aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+        aria-expanded={!sidebarCollapsed}
+        onClick={toggleSidebar}
+      >
+        <Icon name="sidebar" />
+      </button>
       <aside className="sidebar" style={{ width: sidebarWidth }}>
+        <div className="titlebar" data-tauri-drag-region />
         <div className="sidebar-header">
           <span>网站</span>
           <button className="icon" title="添加网站" aria-label="添加网站" onClick={() => setDialog({ kind: "addSite" })}>
@@ -279,6 +298,13 @@ function App() {
       />
 
       <main className="main">
+        <div className="titlebar" data-tauri-drag-region>
+          <span className="window-title" data-tauri-drag-region title={page?.title ?? ""}>
+            {active
+              ? `${active.site.name} · ${active.account.name}${page?.loading ? " · 加载中" : ""}`
+              : "网页管理器"}
+          </span>
+        </div>
         <div className="toolbar">
           {active ? (
             <>
@@ -307,10 +333,6 @@ function App() {
                 url={page?.url ?? active.site.url}
                 onGo={(url) => activeTab && run(() => api.navigate(activeTab, "go", url))}
               />
-              <span className="badge" title={page?.title ?? ""}>
-                {active.site.name} · {active.account.name}
-                {page?.loading ? " · 加载中" : ""}
-              </span>
             </>
           ) : (
             <span className="hint">选择左侧的账号打开网站</span>

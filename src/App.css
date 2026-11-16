@@ -55,8 +55,60 @@ button.icon.danger:hover {
 }
 
 .app {
+  position: relative;
   display: flex;
   height: 100%;
+}
+
+/* Our own title bar row (the native one is overlaid on macOS). Both columns have
+   one, so the splitter runs uninterrupted from the top of the window. */
+.titlebar {
+  height: 28px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.sidebar .titlebar {
+  background: #f6f8fa;
+}
+
+.window-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+/* Sits in the title bar row, right of the macOS traffic lights. */
+button.icon.sidebar-toggle {
+  position: absolute;
+  top: 1px;
+  left: 8px;
+  z-index: 2;
+}
+
+.app.mac button.icon.sidebar-toggle {
+  left: 76px;
+}
+
+/* Keep the centered title clear of the toggle (and traffic lights) on both sides. */
+.app.sidebar-collapsed .main .titlebar {
+  padding: 0 40px;
+}
+
+.app.mac.sidebar-collapsed .main .titlebar {
+  padding: 0 110px;
+}
+
+.app.sidebar-collapsed .sidebar,
+.app.sidebar-collapsed .splitter {
+  display: none;
 }
 
 .sidebar {
@@ -216,14 +268,6 @@ button.icon.danger:hover {
   background: #f6f8fa;
 }
 
-.badge {
-  color: var(--muted);
-  white-space: nowrap;
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .content {
   flex: 1;
   position: relative;
@@ -374,19 +418,32 @@ button.icon.tab-close {
   height: 20px;
 }
 
+/* A full-height 1px column of its own. Nothing of it may overlap the content area:
+   the native webview covers that and would clip the line, so the grab area and the
+   hover highlight extend into the sidebar only. */
 .splitter {
+  position: relative;
   flex-shrink: 0;
-  width: 5px;
-  margin: 0 -2px;
+  width: 1px;
   z-index: 1;
   cursor: col-resize;
-  background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat;
+  background: var(--border);
   touch-action: none;
+}
+
+.splitter::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  right: 0;
 }
 
 .splitter:hover,
 .splitter.dragging {
-  background: linear-gradient(var(--accent), var(--accent)) center / 3px 100% no-repeat;
+  background: var(--accent);
+  box-shadow: -2px 0 0 var(--accent);
 }
 
 .sidebar-footer {
