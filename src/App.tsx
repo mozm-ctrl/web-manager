@@ -405,7 +405,12 @@ function App() {
 
       {resizing && <div className="resize-overlay" />}
       {dialog?.kind === "credential" ? (
-        <CredentialDialog account={dialog.account} site={dialog.site} onClose={() => setDialog(null)} />
+        <CredentialDialog
+          account={dialog.account}
+          site={dialog.site}
+          onClose={() => setDialog(null)}
+          onSaved={refresh}
+        />
       ) : (
         dialog && <Dialog state={dialog} onClose={() => setDialog(null)} onDone={refresh} run={run} />
       )}
@@ -437,9 +442,20 @@ function AddressBar({ url, onGo }: { url: string; onGo: (url: string) => void })
   );
 }
 
-function CredentialDialog({ account, site, onClose }: { account: Account; site: Site; onClose: () => void }) {
-  // The note defaults to the site's URL; it is stored once the credential is saved.
-  const [cred, setCred] = useState<Credential>({ username: "", password: "", note: site.url });
+function CredentialDialog({
+  account,
+  site,
+  onClose,
+  onSaved,
+}: {
+  account: Account;
+  site: Site;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [cred, setCred] = useState<Credential>({ username: "", password: "", note: "" });
+  // The account's home address (kept in sites.json, not the keychain); empty means the site's URL.
+  const [address, setAddress] = useState(account.url ?? site.url);
   const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [reveal, setReveal] = useState(false);
@@ -449,7 +465,7 @@ function CredentialDialog({ account, site, onClose }: { account: Account; site: 
     api
       .getCredential(account.id)
       .then((c) => {
-        if (c) setCred({ ...c, note: c.note || site.url });
+        if (c) setCred(c);
         else setEditing(true);
         setLoaded(true);
       })
@@ -457,7 +473,7 @@ function CredentialDialog({ account, site, onClose }: { account: Account; site: 
         setMessage(String(e));
         setLoaded(true);
       });
-  }, [account.id, site.url]);
+  }, [account.id]);
 
   const copy = async (label: string, text: string) => {
     try {
@@ -471,13 +487,16 @@ function CredentialDialog({ account, site, onClose }: { account: Account; site: 
   const save = async () => {
     try {
       await api.setCredential(account.id, cred);
+      const url = address.trim();
+      await api.setAccountUrl(account.id, url === site.url ? "" : url);
+      await onSaved();
       onClose();
     } catch (e) {
       setMessage(String(e));
     }
   };
 
-  const field = (key: keyof Credential, label: string, placeholder: string, secret = false) => (
+  const field = (key: "username" | "password", label: string, placeholder: string, secret = false) => (
     <label>
       {label}
       <div className="field-row">
@@ -496,7 +515,7 @@ function CredentialDialog({ account, site, onClose }: { account: Account; site: 
             {reveal ? "隐藏" : "显示"}
           </button>
         )}
-        {!editing && key !== "note" && (
+        {!editing && (
           <button
             type="button"
             aria-label={`复制${label}`}
@@ -525,10 +544,25 @@ function CredentialDialog({ account, site, onClose }: { account: Account; site: 
           <>
             {field("username", "账号", "用户名 / 邮箱 / 手机号")}
             {field("password", "密码", "密码", true)}
-            {field("note", "备注", "可选，如密保问题提示")}
+            <label>
+              地址
+              <div className="field-row">
+                <input
+                  value={address}
+                  readOnly={!editing}
+                  onChange={(e) => setAddress(e.target.value)}
+                  placeholder={editing ? `留空则打开 ${site.url}` : ""}
+                  aria-label="地址"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </div>
+            </label>
           </>
         )}
-        <p className="hint-text">{message ?? "保存在系统钥匙串里，不会写进 sites.json。"}</p>
+        <p className="hint-text">
+          {message ?? "打开这个账号时进入「地址」里的网址。账号密码保存在系统钥匙串里，不会写进 sites.json。"}
+        </p>
         <div className="dialog-actions">
           {editing ? (
             <>

@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 export interface Account {
   id: string;
   name: string;
+  /** Home address; the site's URL is used when absent. */
+  url?: string;
 }
 
 export interface Site {
@@ -43,6 +45,7 @@ export const api = {
   addAccount: (siteId: string, name: string) =>
     invoke<Account>("add_account", { siteId, name }),
   renameAccount: (id: string, name: string) => invoke<void>("rename_account", { id, name }),
+  setAccountUrl: (id: string, url: string) => invoke<void>("set_account_url", { id, url }),
   deleteAccount: (id: string) => invoke<void>("delete_account", { id }),
   openAccount: (id: string) => invoke<void>("open_account", { id }),
   closeActive: () => invoke<void>("close_active"),

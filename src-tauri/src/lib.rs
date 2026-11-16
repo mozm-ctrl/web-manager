@@ -242,7 +242,8 @@ fn site_url_of(app: &AppHandle, account_id: Uuid) -> Result<Url, String> {
         .iter()
         .find(|s| s.accounts.iter().any(|a| a.id == account_id))
         .ok_or("账号不存在")?;
-    parse_url(&site.url)
+    let account_url = site.accounts.iter().find(|a| a.id == account_id).and_then(|a| a.url.as_deref());
+    parse_url(account_url.unwrap_or(&site.url))
 }
 
 /// Opens a new tab for the account (at `url`, or the site's home page) and makes it active.
@@ -426,6 +427,7 @@ fn add_account(state: State<'_, AppState>, site_id: String, name: String) -> Res
         } else {
             name.to_string()
         },
+        url: None,
     };
     site.accounts.push(account.clone());
     state.save(&store)?;
@@ -438,6 +440,16 @@ fn rename_account(state: State<'_, AppState>, id: String, name: String) -> Resul
     let mut store = state.store.lock().unwrap();
     let acc = store.account_mut(id).ok_or("账号不存在")?;
     acc.name = name.trim().to_string();
+    state.save(&store)
+}
+
+/// Sets the account's own home address; an empty one falls back to the site's URL.
+#[tauri::command]
+fn set_account_url(state: State<'_, AppState>, id: String, url: String) -> Result<(), String> {
+    let id = parse_id(&id)?;
+    let url = if url.trim().is_empty() { None } else { Some(parse_url(&url)?.to_string()) };
+    let mut store = state.store.lock().unwrap();
+    store.account_mut(id).ok_or("账号不存在")?.url = url;
     state.save(&store)
 }
 
@@ -680,6 +692,7 @@ pub fn run() {
             delete_site,
             add_account,
             rename_account,
+            set_account_url,
             delete_account,
             open_account,
             close_active,

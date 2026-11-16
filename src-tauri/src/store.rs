@@ -4,11 +4,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// One login identity on a site. Only the id (which keys the isolated browser
-/// data store) and a display name are kept — never credentials.
+/// data store), a display name and an optional home address are kept — never credentials.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
     pub id: Uuid,
     pub name: String,
+    /// Opened instead of the site's URL when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
