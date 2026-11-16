@@ -11,6 +11,7 @@ const paths = {
   forward: "M5 12h14M13 6l6 6-6 6",
   reload: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5",
   home: "M4 11l8-7 8 7M6 9.5V20h12V9.5",
+  sidebar: "M4 5h16v14H4zM9 5v14",
 };
 
 export type IconName = keyof typeof paths;

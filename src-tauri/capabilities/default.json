@@ -4,6 +4,8 @@
   "description": "Only the local sidebar UI (webview \"main\") may call commands; account webviews load remote sites and get no IPC access.",
   "permissions": [
     "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
     "opener:default",
     "clipboard-manager:allow-write-text"
   ],
