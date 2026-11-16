@@ -341,7 +341,7 @@ function App() {
               </button>
               <AddressBar
                 key={activeTab ?? active.account.id}
-                url={page?.url ?? active.site.url}
+                url={page ? displayUrl(page.url) : (active.account.url ?? active.site.url)}
                 onGo={(url) => activeTab && run(() => api.navigate(activeTab, "go", url))}
               />
             </>
@@ -361,7 +361,7 @@ function App() {
           <div className="tabbar">
             {(accountTabs?.tabs ?? []).map((tabId) => {
               const p = pages[tabId];
-              const label = p?.title || (p?.url ? hostOf(p.url) : "新标签页");
+              const label = p?.title || (p?.url && displayUrl(p.url) ? hostOf(p.url) : "新标签页");
               return (
                 <div key={tabId} className={`tab ${tabId === activeTab ? "active" : ""}`} title={p?.url}>
                   <button
@@ -387,7 +387,16 @@ function App() {
               className="icon"
               title="新建标签页"
               aria-label="新建标签页"
-              onClick={() => run(() => api.newTab(active.account.id))}
+              onClick={() =>
+                run(async () => {
+                  const tabId = await api.newTab(active.account.id, true);
+                  // about:blank may not report a page load, so record it here.
+                  setPages((p) => ({
+                    ...p,
+                    [tabId]: p[tabId] ?? { accountId: active.account.id, tabId, url: "about:blank", title: null, loading: false },
+                  }));
+                })
+              }
             >
               <Icon name="plus" />
             </button>
@@ -426,9 +435,18 @@ function hostOf(url: string) {
   }
 }
 
+// A blank new tab shows an empty address bar rather than "about:blank".
+function displayUrl(url: string) {
+  return url.startsWith("about:") ? "" : url;
+}
+
 function AddressBar({ url, onGo }: { url: string; onGo: (url: string) => void }) {
   const [value, setValue] = useState(url);
-  useEffect(() => setValue(url), [url]);
+  const inputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    setValue(url);
+    if (url === "") inputRef.current?.focus();
+  }, [url]);
   return (
     <form
       className="address"
@@ -437,7 +455,13 @@ function AddressBar({ url, onGo }: { url: string; onGo: (url: string) => void })
         onGo(value);
       }}
     >
-      <input value={value} onChange={(e) => setValue(e.target.value)} spellCheck={false} />
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="输入或粘贴网址，按回车打开"
+        spellCheck={false}
+      />
     </form>
   );
 }

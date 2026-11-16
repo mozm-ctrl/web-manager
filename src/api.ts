@@ -58,7 +58,7 @@ export const api = {
   }) =>
     invoke<void>("set_content_bounds", { bounds }),
   setOverlay: (visible: boolean) => invoke<void>("set_overlay", { visible }),
-  newTab: (accountId: string) => invoke<string>("new_tab", { accountId }),
+  newTab: (accountId: string, blank = false) => invoke<string>("new_tab", { accountId, blank }),
   selectTab: (tabId: string) => invoke<void>("select_tab", { tabId }),
   closeTab: (tabId: string) => invoke<void>("close_tab", { tabId }),
   navigate: (tabId: string, action: NavAction, url?: string) =>
