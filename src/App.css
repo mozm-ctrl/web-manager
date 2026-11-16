@@ -443,7 +443,8 @@ button.icon.tab-close {
 .splitter:hover,
 .splitter.dragging {
   background: var(--accent);
-  box-shadow: -2px 0 0 var(--accent);
+  /* Widen to a solid 3px bar, growing into the sidebar only. */
+  box-shadow: -1px 0 var(--accent), -2px 0 var(--accent);
 }
 
 .sidebar-footer {
