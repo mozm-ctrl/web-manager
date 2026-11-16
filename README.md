@@ -1,6 +1,6 @@
 ## Web Manager · 网页管理器
 
-一个桌面端的多网站、多账号管理器。左侧管理网站和账号，右侧用**每个账号独立的浏览器环境**打开网站：同一个网站可以同时登录好几个号，Cookie 和登录状态互不影响，切换账号不用退出重登，关掉 app 再打开也还是登录状态。
+一个 Mac 桌面端的多网站、多账号管理器。左侧管理网站和账号，右侧用**每个账号独立的浏览器环境**打开网站：同一个网站可以同时登录好几个号，Cookie 和登录状态互不影响，切换账号不用退出重登，关掉 app 再打开也还是登录状态。
 
 ![](docs/2-account-b-bob.png)
 
@@ -12,8 +12,9 @@
 
 | 电脑 | 下载哪个 | 系统要求 |
 | --- | --- | --- |
-| Mac（Apple 芯片和 Intel 芯片都可以） | `Web.Manager_0.5.0_universal.dmg` | macOS 14 及以上 |
-| Windows | `Web.Manager_0.5.0_windows_x64.zip` | Windows 10 / 11，64 位 |
+| Mac（Apple 芯片和 Intel 芯片都可以） | `Web.Manager_0.6.0_universal.dmg` | macOS 14 及以上 |
+
+> 目前只提供 Mac 版。代码本身支持 Windows，但还没有在真机上测试，暂不提供 Windows 安装包。
 
 ## 安装
 
@@ -24,12 +25,6 @@
    - 「系统设置 → 隐私与安全性」拉到底部，点 **仍要打开**；
    - 或者在终端执行：`xattr -dr com.apple.quarantine "/Applications/Web Manager.app"`
 4. 第一次保存或查看账号密码时，系统可能会问是否允许访问钥匙串，点「始终允许」。
-
-### Windows
-1. 解压 zip，把 `Web Manager.exe` 放到一个固定的文件夹，双击运行，不需要安装。
-2. 如果弹出「Windows 已保护你的电脑」，点「更多信息 → 仍要运行」（同样是因为没有购买代码签名证书）。
-
-> ⚠️ Windows 版是在 Mac 上交叉编译的，还没有在真机上完整测试过。遇到问题欢迎提 Issue。
 
 ## 使用说明
 
@@ -54,10 +49,9 @@
 | --- | --- | --- |
 | 应用框架 | [Tauri 2](https://tauri.app/)（Rust） | 创建窗口、把网页嵌进窗口、调用系统功能 |
 | 界面 | React + TypeScript + Vite | 左侧网站/账号列表、标签栏、对话框 |
-| 网页引擎（Mac） | 系统自带的 WebKit（Safari 的引擎） | 显示网页、保存 Cookie |
-| 网页引擎（Windows） | 系统自带的 WebView2（Edge / Chromium 内核） | 显示网页、保存 Cookie |
-| 账号隔离 | Mac：`WKWebsiteDataStore` 独立数据仓库（macOS 14+）；Windows：每个账号单独的 WebView2 数据目录 | 每个账号一份 Cookie / LocalStorage，互不干扰 |
-| 密码保存 | [keyring](https://crates.io/crates/keyring)：Mac 钥匙串 / Windows 凭据管理器 | 由系统加密保存账号密码 |
+| 网页引擎 | 系统自带的 WebKit（Safari 的引擎） | 显示网页、保存 Cookie |
+| 账号隔离 | `WKWebsiteDataStore` 独立数据仓库（macOS 14+） | 每个账号一份 Cookie / LocalStorage，互不干扰 |
+| 密码保存 | [keyring](https://crates.io/crates/keyring)：macOS 钥匙串 | 由系统加密保存账号密码 |
 
 因为网页引擎用的是系统自带的，安装包只有几 MB。
 
@@ -69,11 +63,11 @@
 
 所有数据只在本机，不会上传：
 
-| 内容 | Mac | Windows |
-| --- | --- | --- |
-| 网站和账号列表（不含密码） | `~/Library/Application Support/com.mozm.webmanager/sites.json` | `%APPDATA%\com.mozm.webmanager\sites.json` |
-| 每个账号的 Cookie 和网页缓存 | `~/Library/WebKit/com.mozm.webmanager/` | `%APPDATA%\com.mozm.webmanager\profiles\` |
-| 保存的账号密码 | 钥匙串（搜索 `com.mozm.webmanager`） | 凭据管理器（搜索 `com.mozm.webmanager`） |
+| 内容 | 位置 |
+| --- | --- |
+| 网站和账号列表（不含密码） | `~/Library/Application Support/com.mozm.webmanager/sites.json` |
+| 每个账号的 Cookie 和网页缓存 | `~/Library/WebKit/com.mozm.webmanager/` |
+| 保存的账号密码 | 钥匙串（搜索 `com.mozm.webmanager`） |
 
 直接删除 app 不会删除这些数据。想彻底清理，先在 app 左下角点「清除所有数据」，再把 app 删掉即可。
 
@@ -104,14 +98,14 @@ rustup target add x86_64-apple-darwin aarch64-apple-darwin
 pnpm tauri build --target universal-apple-darwin
 ```
 
-在 Mac 上交叉编译 Windows 版：需要 `cargo install cargo-xwin`，以及 PATH 里有 `clang-cl`、`lld-link`、`llvm-lib`、`llvm-rc`。
+代码也能在 Mac 上交叉编译 Windows 版（未在真机测试，不随 Release 发布）：需要 `cargo install cargo-xwin`，以及 PATH 里有 `clang-cl`、`lld-link`、`llvm-lib`、`llvm-rc`。
 
 ```bash
 rustup target add x86_64-pc-windows-msvc
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle
 ```
 
-`ci/release.yml` 是 GitHub Actions 工作流，可以在真实的 Mac / Windows 机器上打包并挂到 Release。启用方法：把它复制到 `.github/workflows/release.yml`，然后在 Actions 页面手动运行或推送 `v*` 标签。
+`ci/release.yml` 是 GitHub Actions 工作流，可以在 GitHub 的 Mac 机器上打包并挂到 Release。启用方法：把它复制到 `.github/workflows/release.yml`，然后在 Actions 页面手动运行或推送 `v*` 标签。
 
 ### 代码结构
 
