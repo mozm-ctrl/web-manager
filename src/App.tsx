@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { api, type Account, type Credential, type PageInfo, type Site, type TabsInfo } from "./api";
 import { Icon } from "./Icon";
@@ -10,7 +11,7 @@ type DialogState =
   | { kind: "editSite"; site: Site }
   | { kind: "addAccount"; site: Site }
   | { kind: "renameAccount"; account: Account }
-  | { kind: "credential"; account: Account }
+  | { kind: "credential"; account: Account; site: Site }
   | { kind: "confirm"; message: string; onConfirm: () => Promise<void> };
 
 const SIDEBAR_MIN = 180;
@@ -34,6 +35,7 @@ function App() {
     return saved >= SIDEBAR_MIN && saved <= SIDEBAR_MAX ? saved : 260;
   });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "1");
+  const [dark, setDark] = useState(() => localStorage.getItem("theme") === "dark");
   const contentRef = useRef<HTMLDivElement>(null);
 
   const toggleSidebar = () =>
@@ -41,6 +43,15 @@ function App() {
       localStorage.setItem("sidebarCollapsed", c ? "0" : "1");
       return !c;
     });
+
+  // The window theme also darkens the native title bar and traffic lights.
+  useEffect(() => {
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    localStorage.setItem("theme", dark ? "dark" : "light");
+    getCurrentWindow()
+      .setTheme(dark ? "dark" : "light")
+      .catch(() => {});
+  }, [dark]);
 
   const refresh = useCallback(async () => setSites(await api.listSites()), []);
 
@@ -124,15 +135,6 @@ function App() {
 
   return (
     <div className={`app ${IS_MAC ? "mac" : ""} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-      <button
-        className="icon sidebar-toggle"
-        title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
-        aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
-        aria-expanded={!sidebarCollapsed}
-        onClick={toggleSidebar}
-      >
-        <Icon name="sidebar" />
-      </button>
       <aside className="sidebar" style={{ width: sidebarWidth }}>
         <div className="titlebar" data-tauri-drag-region />
         <div className="sidebar-header">
@@ -204,7 +206,7 @@ function App() {
                           className="icon"
                           title="账号密码"
                           aria-label={`账号密码 ${acc.name}`}
-                          onClick={() => setDialog({ kind: "credential", account: acc })}
+                          onClick={() => setDialog({ kind: "credential", account: acc, site })}
                         >
                           <Icon name="key" />
                         </button>
@@ -306,6 +308,15 @@ function App() {
           </span>
         </div>
         <div className="toolbar">
+          <button
+            className="icon"
+            title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+            aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}
+            aria-expanded={!sidebarCollapsed}
+            onClick={toggleSidebar}
+          >
+            <Icon name="sidebar" />
+          </button>
           {active ? (
             <>
               <button className="icon" title="后退" aria-label="后退" onClick={() => nav("back")}>
@@ -324,7 +335,7 @@ function App() {
                 className="icon"
                 title="查看此账号保存的账号密码"
                 aria-label="查看账号密码"
-                onClick={() => setDialog({ kind: "credential", account: active.account })}
+                onClick={() => setDialog({ kind: "credential", account: active.account, site: active.site })}
               >
                 <Icon name="key" />
               </button>
@@ -337,6 +348,14 @@ function App() {
           ) : (
             <span className="hint">选择左侧的账号打开网站</span>
           )}
+          <button
+            className="icon theme-toggle"
+            title={dark ? "切换到白天模式" : "切换到夜间模式"}
+            aria-label={dark ? "切换到白天模式" : "切换到夜间模式"}
+            onClick={() => setDark((d) => !d)}
+          >
+            <Icon name={dark ? "sun" : "moon"} />
+          </button>
         </div>
         {active && (
           <div className="tabbar">
@@ -386,7 +405,7 @@ function App() {
 
       {resizing && <div className="resize-overlay" />}
       {dialog?.kind === "credential" ? (
-        <CredentialDialog account={dialog.account} onClose={() => setDialog(null)} />
+        <CredentialDialog account={dialog.account} site={dialog.site} onClose={() => setDialog(null)} />
       ) : (
         dialog && <Dialog state={dialog} onClose={() => setDialog(null)} onDone={refresh} run={run} />
       )}
@@ -418,8 +437,9 @@ function AddressBar({ url, onGo }: { url: string; onGo: (url: string) => void })
   );
 }
 
-function CredentialDialog({ account, onClose }: { account: Account; onClose: () => void }) {
-  const [cred, setCred] = useState<Credential>({ username: "", password: "", note: "" });
+function CredentialDialog({ account, site, onClose }: { account: Account; site: Site; onClose: () => void }) {
+  // The note defaults to the site's URL; it is stored once the credential is saved.
+  const [cred, setCred] = useState<Credential>({ username: "", password: "", note: site.url });
   const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [reveal, setReveal] = useState(false);
@@ -429,7 +449,7 @@ function CredentialDialog({ account, onClose }: { account: Account; onClose: () 
     api
       .getCredential(account.id)
       .then((c) => {
-        if (c) setCred(c);
+        if (c) setCred({ ...c, note: c.note || site.url });
         else setEditing(true);
         setLoaded(true);
       })
@@ -437,7 +457,7 @@ function CredentialDialog({ account, onClose }: { account: Account; onClose: () 
         setMessage(String(e));
         setLoaded(true);
       });
-  }, [account.id]);
+  }, [account.id, site.url]);
 
   const copy = async (label: string, text: string) => {
     try {
@@ -451,9 +471,7 @@ function CredentialDialog({ account, onClose }: { account: Account; onClose: () 
   const save = async () => {
     try {
       await api.setCredential(account.id, cred);
-      setEditing(false);
-      setReveal(false);
-      setMessage("已保存到系统钥匙串");
+      onClose();
     } catch (e) {
       setMessage(String(e));
     }

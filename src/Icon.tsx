@@ -12,6 +12,8 @@ const paths = {
   reload: "M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5",
   home: "M4 11l8-7 8 7M6 9.5V20h12V9.5",
   sidebar: "M4 5h16v14H4zM9 5v14",
+  moon: "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z",
+  sun: "M12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4",
 };
 
 export type IconName = keyof typeof paths;
