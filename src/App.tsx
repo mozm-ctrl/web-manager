@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { listen } from "@tauri-apps/api/event";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { api, type Account, type Credential, type PageInfo, type Site, type TabsInfo } from "./api";
+import { Icon } from "./Icon";
 import "./App.css";
 
 type DialogState =
@@ -11,6 +12,9 @@ type DialogState =
   | { kind: "renameAccount"; account: Account }
   | { kind: "credential"; account: Account }
   | { kind: "confirm"; message: string; onConfirm: () => Promise<void> };
+
+const SIDEBAR_MIN = 180;
+const SIDEBAR_MAX = 520;
 
 function App() {
   const [sites, setSites] = useState<Site[]>([]);
@@ -22,6 +26,11 @@ function App() {
   const [tabs, setTabs] = useState<Record<string, TabsInfo>>({});
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [resizing, setResizing] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = Number(localStorage.getItem("sidebarWidth"));
+    return saved >= SIDEBAR_MIN && saved <= SIDEBAR_MAX ? saved : 260;
+  });
   const contentRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => setSites(await api.listSites()), []);
@@ -83,10 +92,11 @@ function App() {
     };
   }, []);
 
-  // Native webviews always sit above the HTML UI, so hide them while a dialog is open.
+  // Native webviews always sit above the HTML UI and would swallow the mouse, so hide
+  // them while a dialog is open or the sidebar is being resized.
   useEffect(() => {
-    api.setOverlay(dialog !== null);
-  }, [dialog]);
+    api.setOverlay(dialog !== null || resizing);
+  }, [dialog, resizing]);
 
   const openAccount = (id: string) =>
     run(async () => {
@@ -105,33 +115,38 @@ function App() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
+      <aside className="sidebar" style={{ width: sidebarWidth }}>
         <div className="sidebar-header">
           <span>网站</span>
           <button className="icon" title="添加网站" aria-label="添加网站" onClick={() => setDialog({ kind: "addSite" })}>
-            ＋
+            <Icon name="plus" />
           </button>
         </div>
         <div className="site-list">
           {sites.length === 0 && <div className="empty">点击右上角 ＋ 添加第一个网站</div>}
           {sites.map((site) => (
             <div key={site.id} className="site">
-              <div className="site-row">
-                <button
-                  className="caret"
-                  onClick={() => setCollapsed((c) => ({ ...c, [site.id]: !c[site.id] }))}
-                >
-                  {collapsed[site.id] ? "▸" : "▾"}
-                </button>
-                <span className="site-name" title={site.url}>
-                  {site.name}
+              <div
+                className="site-row"
+                onClick={() => setCollapsed((c) => ({ ...c, [site.id]: !c[site.id] }))}
+              >
+                <span className="caret">
+                  <Icon name={collapsed[site.id] ? "chevronRight" : "chevronDown"} size={14} />
                 </span>
-                <span className="row-actions">
+                <button
+                  className="site-name"
+                  title={site.url}
+                  aria-label={`${collapsed[site.id] ? "展开" : "收起"} ${site.name}`}
+                  aria-expanded={!collapsed[site.id]}
+                >
+                  {site.name}
+                </button>
+                <span className="row-actions" onClick={(e) => e.stopPropagation()}>
                   <button className="icon" title="新增账号" aria-label={`给 ${site.name} 新增账号`} onClick={() => setDialog({ kind: "addAccount", site })}>
-                    ＋
+                    <Icon name="plus" />
                   </button>
                   <button className="icon" title="编辑网站" aria-label={`编辑网站 ${site.name}`} onClick={() => setDialog({ kind: "editSite", site })}>
-                    ✎
+                    <Icon name="edit" />
                   </button>
                   <button
                     className="icon danger"
@@ -149,7 +164,7 @@ function App() {
                       })
                     }
                   >
-                    ✕
+                    <Icon name="close" />
                   </button>
                 </span>
               </div>
@@ -172,10 +187,10 @@ function App() {
                           aria-label={`账号密码 ${acc.name}`}
                           onClick={() => setDialog({ kind: "credential", account: acc })}
                         >
-                          🔑
+                          <Icon name="key" />
                         </button>
                         <button className="icon" title="重命名" aria-label={`重命名 ${acc.name}`} onClick={() => setDialog({ kind: "renameAccount", account: acc })}>
-                          ✎
+                          <Icon name="edit" />
                         </button>
                         <button
                           className="icon danger"
@@ -193,7 +208,7 @@ function App() {
                             })
                           }
                         >
-                          ✕
+                          <Icon name="close" />
                         </button>
                       </span>
                     </div>
@@ -230,22 +245,54 @@ function App() {
           </button>
         </div>
       </aside>
+      <div
+        className={`splitter ${resizing ? "dragging" : ""}`}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="拖动调整侧栏宽度"
+        title="拖动调整宽度，双击恢复默认"
+        onDoubleClick={() => {
+          setSidebarWidth(260);
+          localStorage.setItem("sidebarWidth", "260");
+        }}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          const startX = e.clientX;
+          const startWidth = sidebarWidth;
+          let width = startWidth;
+          setResizing(true);
+          const move = (ev: PointerEvent) => {
+            width = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + ev.clientX - startX));
+            setSidebarWidth(width);
+          };
+          const up = () => {
+            setResizing(false);
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", up);
+            window.removeEventListener("pointercancel", up);
+            localStorage.setItem("sidebarWidth", String(width));
+          };
+          window.addEventListener("pointermove", move);
+          window.addEventListener("pointerup", up);
+          window.addEventListener("pointercancel", up);
+        }}
+      />
 
       <main className="main">
         <div className="toolbar">
           {active ? (
             <>
               <button className="icon" title="后退" aria-label="后退" onClick={() => nav("back")}>
-                ←
+                <Icon name="back" />
               </button>
               <button className="icon" title="前进" aria-label="前进" onClick={() => nav("forward")}>
-                →
+                <Icon name="forward" />
               </button>
               <button className="icon" title="刷新" aria-label="刷新" onClick={() => nav("reload")}>
-                ⟳
+                <Icon name="reload" />
               </button>
               <button className="icon" title="回到首页" aria-label="回到首页" onClick={() => nav("home")}>
-                ⌂
+                <Icon name="home" />
               </button>
               <button
                 className="icon"
@@ -253,7 +300,7 @@ function App() {
                 aria-label="查看账号密码"
                 onClick={() => setDialog({ kind: "credential", account: active.account })}
               >
-                🔑
+                <Icon name="key" />
               </button>
               <AddressBar
                 key={activeTab ?? active.account.id}
@@ -290,7 +337,7 @@ function App() {
                     aria-label={`关闭标签 ${label}`}
                     onClick={() => run(() => api.closeTab(tabId))}
                   >
-                    ×
+                    <Icon name="close" />
                   </button>
                 </div>
               );
@@ -301,7 +348,7 @@ function App() {
               aria-label="新建标签页"
               onClick={() => run(() => api.newTab(active.account.id))}
             >
-              ＋
+              <Icon name="plus" />
             </button>
           </div>
         )}
@@ -315,6 +362,7 @@ function App() {
         </div>
       </main>
 
+      {resizing && <div className="resize-overlay" />}
       {dialog?.kind === "credential" ? (
         <CredentialDialog account={dialog.account} onClose={() => setDialog(null)} />
       ) : (

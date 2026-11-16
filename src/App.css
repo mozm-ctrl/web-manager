@@ -32,11 +32,17 @@ button {
 }
 
 button.icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   border: none;
   background: transparent;
-  padding: 2px 6px;
+  padding: 0;
   color: var(--muted);
-  border-radius: 4px;
+  border-radius: 5px;
 }
 
 button.icon:hover {
@@ -54,9 +60,7 @@ button.icon.danger:hover {
 }
 
 .sidebar {
-  width: 260px;
   flex-shrink: 0;
-  border-right: 1px solid var(--border);
   background: #f6f8fa;
   display: flex;
   flex-direction: column;
@@ -96,16 +100,31 @@ button.icon.danger:hover {
   padding-right: 6px;
 }
 
+.site-row {
+  cursor: pointer;
+  border-radius: 6px;
+  margin: 0 6px;
+}
+
+.site-row:hover {
+  background: var(--hover);
+}
+
 .site-row .caret {
-  border: none;
-  background: transparent;
-  width: 24px;
-  padding: 0;
+  display: inline-flex;
+  justify-content: center;
+  width: 18px;
   color: var(--muted);
 }
 
 .site-name {
   flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  color: inherit;
   font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -351,7 +370,23 @@ button.primary.danger {
 }
 
 button.icon.tab-close {
-  padding: 0 5px;
+  width: 20px;
+  height: 20px;
+}
+
+.splitter {
+  flex-shrink: 0;
+  width: 5px;
+  margin: 0 -2px;
+  z-index: 1;
+  cursor: col-resize;
+  background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat;
+  touch-action: none;
+}
+
+.splitter:hover,
+.splitter.dragging {
+  background: linear-gradient(var(--accent), var(--accent)) center / 3px 100% no-repeat;
 }
 
 .sidebar-footer {
@@ -369,4 +404,11 @@ button.clear-all {
 button.clear-all:hover {
   background: #ffebe9;
   color: var(--danger);
+}
+
+.resize-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  cursor: col-resize;
 }
