@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import { api, type Account, type Credential, type PageEvent, type PageInfo, type Site, type TabsInfo } from "./api";
 import { Icon } from "./Icon";
 import "./App.css";
@@ -12,7 +15,9 @@ type DialogState =
   | { kind: "addAccount"; site: Site }
   | { kind: "renameAccount"; account: Account }
   | { kind: "credential"; account: Account; site: Site }
-  | { kind: "confirm"; message: string; onConfirm: () => Promise<void> };
+  | { kind: "confirm"; message: string; onConfirm: () => Promise<void> }
+  /** `update` is null when there is no newer version, or the check failed (`error`). */
+  | { kind: "update"; update: Update | null; error?: string };
 
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 520;
@@ -56,6 +61,20 @@ function App() {
   }, [dark]);
 
   const refresh = useCallback(async () => setSites(await api.listSites()), []);
+
+  // Checked once per launch; a failed check stays quiet until the user asks (检查更新).
+  const [version, setVersion] = useState("");
+  useEffect(() => {
+    getVersion().then(setVersion);
+    check()
+      .then((update) => update && setDialog((d) => d ?? { kind: "update", update }))
+      .catch((e) => console.warn("update check failed:", e));
+  }, []);
+
+  const checkForUpdate = () =>
+    check()
+      .then((update) => setDialog({ kind: "update", update }))
+      .catch((e) => setDialog({ kind: "update", update: null, error: String(e) }));
 
   const run = useCallback(async (fn: () => Promise<unknown>) => {
     try {
@@ -128,14 +147,23 @@ function App() {
       return;
     }
     let cancelled = false;
-    api
-      .snapshotActive()
-      .catch(() => null)
-      .then((png) => {
+    (async () => {
+      const png = await api.snapshotActive().catch(() => null);
+      if (cancelled) return;
+      // Hiding the webview before the snapshot is on screen shows the empty content
+      // area for a frame or two, which flashes. So decode the image first, then wait
+      // for the frame that paints it before hiding.
+      if (png) {
+        const img = new Image();
+        img.src = png;
+        await img.decode().catch(() => {});
         if (cancelled) return;
         setSnapshot(png);
-        api.setOverlay(true);
-      });
+        await nextPaint();
+        if (cancelled) return;
+      }
+      api.setOverlay(true);
+    })();
     return () => {
       cancelled = true;
     };
@@ -296,6 +324,9 @@ function App() {
           </div>
         )}
         <div className="sidebar-footer">
+          <button className="check-update" title="检查是否有新版本" onClick={checkForUpdate}>
+            检查更新{version && <span className="version">v{version}</span>}
+          </button>
           <button
             className="clear-all"
             aria-label="清除所有数据"
@@ -469,7 +500,9 @@ function App() {
       </main>
 
       {resizing && <div className="resize-overlay" />}
-      {dialog?.kind === "credential" ? (
+      {dialog?.kind === "update" ? (
+        <UpdateDialog update={dialog.update} error={dialog.error} version={version} onClose={() => setDialog(null)} />
+      ) : dialog?.kind === "credential" ? (
         <CredentialDialog
           account={dialog.account}
           site={dialog.site}
@@ -481,6 +514,11 @@ function App() {
       )}
     </div>
   );
+}
+
+/** Resolves once the frame showing the current DOM changes has been painted. */
+function nextPaint() {
+  return new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 }
 
 function hostOf(url: string) {
@@ -560,13 +598,26 @@ function CredentialDialog({
   useEffect(() => {
     api
       .credentialStatus(account.id)
-      .then(({ saved, credential }) => {
+      .then(async ({ saved, credential }) => {
         if (credential) {
           setCred(credential);
           setUnlocked(true);
         } else if (!saved) {
           setUnlocked(true);
           setEditing(true);
+        } else if (!account.username) {
+          // Saved before 0.7.8, which started mirroring the username into sites.json:
+          // read the Keychain once so the username shows now and without a prompt from
+          // then on (get_credential copies it into sites.json).
+          const c = await api.getCredential(account.id).catch((e) => {
+            setMessage(`${e}（点「显示」可重试）`);
+            return null;
+          });
+          if (c) {
+            setCred(c);
+            setUnlocked(true);
+            onSaved();
+          }
         }
         setLoaded(true);
       })
@@ -722,13 +773,101 @@ function CredentialDialog({
   );
 }
 
+function UpdateDialog({
+  update,
+  error,
+  version,
+  onClose,
+}: {
+  update: Update | null;
+  error?: string;
+  version: string;
+  onClose: () => void;
+}) {
+  // Non-null while downloading / installing; the dialog cannot be dismissed then.
+  const [progress, setProgress] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const close = () => {
+    if (progress !== null) return;
+    update?.close().catch(() => {});
+    onClose();
+  };
+
+  // Downloads, checks the signature against the public key in tauri.conf.json,
+  // replaces the app and restarts it.
+  const install = async () => {
+    if (!update) return;
+    let total = 0;
+    let received = 0;
+    setMessage(null);
+    setProgress("正在下载…");
+    try {
+      await update.downloadAndInstall((e) => {
+        if (e.event === "Started") total = e.data.contentLength ?? 0;
+        else if (e.event === "Progress") {
+          received += e.data.chunkLength;
+          if (total) setProgress(`正在下载… ${Math.min(100, Math.floor((received * 100) / total))}%`);
+        } else setProgress("正在安装…");
+      });
+      setProgress("安装完成，正在重启…");
+      await relaunch();
+    } catch (e) {
+      setProgress(null);
+      setMessage(`更新失败：${e}`);
+    }
+  };
+
+  const title = update ? `发现新版本 ${update.version}` : error ? "检查更新失败" : "已是最新版本";
+  return (
+    <div className="backdrop" onClick={close}>
+      <form
+        className="dialog"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (update) install();
+          else close();
+        }}
+      >
+        <h3>{title}</h3>
+        {update ? (
+          <>
+            <p>当前版本 {update.currentVersion}。更新后 app 会自动重启，网站、账号、登录状态和保存的密码都会保留。</p>
+            {update.body && <div className="release-notes">{update.body}</div>}
+          </>
+        ) : (
+          <p>{error ?? `当前版本 ${version} 已是最新。`}</p>
+        )}
+        {(progress ?? message) && <p className="hint-text">{progress ?? message}</p>}
+        <div className="dialog-actions">
+          {update ? (
+            <>
+              <button type="button" onClick={close} disabled={progress !== null}>
+                以后再说
+              </button>
+              <button type="submit" className="primary" disabled={progress !== null}>
+                立即更新
+              </button>
+            </>
+          ) : (
+            <button type="submit" className="primary">
+              好
+            </button>
+          )}
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function Dialog({
   state,
   onClose,
   onDone,
   run,
 }: {
-  state: Exclude<DialogState, { kind: "credential" }>;
+  state: Exclude<DialogState, { kind: "credential" | "update" }>;
   onClose: () => void;
   onDone: () => Promise<void>;
   run: (fn: () => Promise<unknown>) => Promise<void>;

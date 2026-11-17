@@ -12,7 +12,7 @@
 
 | 电脑 | 下载哪个 | 系统要求 |
 | --- | --- | --- |
-| Mac（Apple 芯片和 Intel 芯片都可以） | `Web.Manager_0.7.8_universal.dmg` | macOS 14 及以上 |
+| Mac（Apple 芯片和 Intel 芯片都可以） | `Web.Manager_0.8.0_universal.dmg` | macOS 14 及以上 |
 
 > 目前只提供 Mac 版。代码本身支持 Windows，但还没有在真机上测试，暂不提供 Windows 安装包。
 
@@ -25,6 +25,12 @@
    - 「系统设置 → 隐私与安全性」拉到底部，点 **仍要打开**；
    - 或者在终端执行：`xattr -dr com.apple.quarantine "/Applications/Web Manager.app"`
 4. 第一次保存或查看账号密码时，系统可能会问是否允许访问钥匙串，点「始终允许」。
+
+### 更新
+
+从 0.8.0 开始，app 每次启动会检查一次新版本（左下角「检查更新」也可以随时手动检查）。有新版本时会弹窗显示版本号和更新说明，点「立即更新」后自动下载、校验签名、安装并重启。网站、账号、登录状态和保存的密码都会保留。
+
+0.7.x 及更早的版本没有自动更新，需要手动下载 0.8.0 的 `.dmg` 覆盖安装一次，之后就能自动更新了。
 
 ## 使用说明
 
@@ -79,7 +85,7 @@
 - 标签页不会在重启后恢复（登录状态会保留）；打开的标签页都常驻内存，开很多会变卡。
 - 账号密码只能查看和复制，不会自动填写；查看前不需要额外验证。
 - 打开对话框时右侧网页会暂时隐藏。
-- 安装包未签名，首次打开需要手动放行。
+- 安装包未签名，首次打开需要手动放行（自动更新下载的新版本不需要再放行）。
 
 ## 从源码构建
 
@@ -105,7 +111,19 @@ rustup target add x86_64-pc-windows-msvc
 pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle
 ```
 
-`ci/release.yml` 是 GitHub Actions 工作流，可以在 GitHub 的 Mac 机器上打包并挂到 Release。启用方法：把它复制到 `.github/workflows/release.yml`，然后在 Actions 页面手动运行或推送 `v*` 标签。
+### 发布新版本（带自动更新）
+
+> ⚠️ **不要修改 `tauri.conf.json` 里的 `identifier`（`com.mozm.webmanager`）。** 网站和账号列表（`~/Library/Application Support/com.mozm.webmanager/sites.json`）、每个账号的登录数据（`~/Library/WebKit/com.mozm.webmanager/`）和钥匙串里的密码都按这个标识存放，改了之后新版本会读不到用户原来的数据，看起来就像全部丢失。
+>
+> 同样不要更换 `plugins.updater.pubkey`：已安装的 app 只接受用对应私钥签名的更新包，换了公钥（或丢了私钥）之后，老用户就收不到自动更新，只能手动下载安装。
+
+1. 把 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 里的版本号改成新版本（必须比已发布的大）。
+2. 运行 `scripts/release-mac.sh "这次的更新说明"`。它会打包通用版，用 `~/.tauri/web-manager.key` 签名（私钥密码从钥匙串条目 `web-manager-updater-key` 读取），并在 `release/v版本号/` 生成 4 个文件：`.dmg`、`.app.tar.gz`、`.app.tar.gz.sig`、`latest.json`。
+3. 在 GitHub 新建 Release，标签 `v版本号`，把这 4 个文件全部上传，直接发布（不要选草稿或预发布）。已安装的 app 检查的是 `releases/latest/download/latest.json`，也就是最新正式 Release 里的 `latest.json`。
+
+签名私钥和密码只保存在发布用的电脑上，不在仓库里；丢了就无法再发布自动更新，务必备份到密码管理器。
+
+`ci/release.yml` 是 GitHub Actions 工作流，可以在 GitHub 的 Mac 机器上打包并挂到 Release。启用方法：把它复制到 `.github/workflows/release.yml`，并在仓库 Secrets 里添加 `TAURI_SIGNING_PRIVATE_KEY`（私钥文件内容）和 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，然后在 Actions 页面手动运行或推送 `v*` 标签。（目前本机的 GitHub 令牌没有 `workflow` 权限，所以还没有启用，发布走上面的本机脚本。）
 
 ### 代码结构
 
@@ -116,3 +134,4 @@ pnpm tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --no-bundle
 | `src-tauri/src/credentials.rs` | 账号密码读写系统钥匙串 |
 | `src/App.tsx`、`src/App.css` | 界面 |
 | `src/api.ts` | 界面调用后端的接口 |
+| `scripts/release-mac.sh` | 本机打包发布（含自动更新文件） |
