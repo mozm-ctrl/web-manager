@@ -385,6 +385,17 @@ button.primary.danger {
   background: var(--panel);
 }
 
+.release-notes {
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--panel);
+}
+
 .dialog .hint-text {
   color: var(--muted);
   font-size: 12px;
@@ -501,6 +512,24 @@ button.icon.tab-close {
 .sidebar-footer {
   padding: 8px;
   border-top: 1px solid var(--border);
+}
+
+button.check-update {
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+button.check-update:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.check-update .version {
+  margin-left: 6px;
+  opacity: 0.7;
 }
 
 button.clear-all {

@@ -1,6 +1,6 @@
 [package]
 name = "web-manager"
-version = "0.7.8"
+version = "0.8.0"
 description = "Multi-site, multi-account web manager"
 authors = ["mozm-ctrl"]
 edition = "2024"
@@ -24,6 +24,10 @@ tokio = { version = "1", features = ["time"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-opener = "2"
+# Self-update from GitHub Releases (see README「自动更新」) and relaunch afterwards.
+# System TLS (Security.framework) instead of rustls keeps the app ~2 MB smaller.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["native-tls", "system-proxy", "zip"] }
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
