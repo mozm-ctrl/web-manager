@@ -140,9 +140,13 @@ function App() {
   // stays visible behind the dialog. Resizing keeps them visible: a drag that starts
   // on the splitter keeps its pointer events even over the webview.
   const [snapshot, setSnapshot] = useState<string | null>(null);
+  // False until the page is hidden: the dialog stays invisible so it never shows
+  // half over the sidebar and half under the native page.
+  const [covered, setCovered] = useState(false);
   const dialogOpen = dialog !== null;
   useEffect(() => {
     if (!dialogOpen) {
+      setCovered(false);
       api.setOverlay(false).then(() => setSnapshot(null));
       return;
     }
@@ -162,7 +166,8 @@ function App() {
         await nextPaint();
         if (cancelled) return;
       }
-      api.setOverlay(true);
+      await api.setOverlay(true).catch(() => {});
+      if (!cancelled) setCovered(true);
     })();
     return () => {
       cancelled = true;
@@ -500,18 +505,20 @@ function App() {
       </main>
 
       {resizing && <div className="resize-overlay" />}
-      {dialog?.kind === "update" ? (
-        <UpdateDialog update={dialog.update} error={dialog.error} version={version} onClose={() => setDialog(null)} />
-      ) : dialog?.kind === "credential" ? (
-        <CredentialDialog
-          account={dialog.account}
-          site={dialog.site}
-          onClose={() => setDialog(null)}
-          onSaved={refresh}
-        />
-      ) : (
-        dialog && <Dialog state={dialog} onClose={() => setDialog(null)} onDone={refresh} run={run} />
-      )}
+      <div className={covered ? "" : "dialog-pending"}>
+        {dialog?.kind === "update" ? (
+          <UpdateDialog update={dialog.update} error={dialog.error} version={version} onClose={() => setDialog(null)} />
+        ) : dialog?.kind === "credential" ? (
+          <CredentialDialog
+            account={dialog.account}
+            site={dialog.site}
+            onClose={() => setDialog(null)}
+            onSaved={refresh}
+          />
+        ) : (
+          dialog && <Dialog state={dialog} onClose={() => setDialog(null)} onDone={refresh} run={run} />
+        )}
+      </div>
     </div>
   );
 }
