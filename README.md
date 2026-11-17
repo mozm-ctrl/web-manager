@@ -12,7 +12,7 @@
 
 | 电脑 | 下载哪个 | 系统要求 |
 | --- | --- | --- |
-| Mac（Apple 芯片和 Intel 芯片都可以） | `Web.Manager_0.7.4_universal.dmg` | macOS 14 及以上 |
+| Mac（Apple 芯片和 Intel 芯片都可以） | `Web.Manager_0.7.5_universal.dmg` | macOS 14 及以上 |
 
 > 目前只提供 Mac 版。代码本身支持 Windows，但还没有在真机上测试，暂不提供 Windows 安装包。
 

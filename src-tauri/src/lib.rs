@@ -488,17 +488,14 @@ async fn open_account(app: AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn new_tab(app: AppHandle, account_id: String, blank: Option<bool>) -> Result<String, String> {
+async fn new_tab(app: AppHandle, account_id: String) -> Result<String, String> {
     let account_id = parse_id(&account_id)?;
     *app.state::<AppState>().active.lock().unwrap() = Some(account_id);
-    // A blank tab skips loading the home page when the user is about to type an address.
-    let url = if blank.unwrap_or(false) { Some(Url::parse("about:blank").unwrap()) } else { None };
-    let id = open_tab(&app, account_id, url)?;
-    if blank.unwrap_or(false) {
-        // The new native webview takes keyboard focus; hand it back to the address bar.
-        if let Some(main) = app.get_webview("main") {
-            let _ = main.set_focus();
-        }
+    let id = open_tab(&app, account_id, None)?;
+    // The new native webview takes keyboard focus; hand it back so the address bar
+    // can take a pasted URL right away.
+    if let Some(main) = app.get_webview("main") {
+        let _ = main.set_focus();
     }
     Ok(id.to_string())
 }

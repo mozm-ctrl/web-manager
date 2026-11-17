@@ -112,11 +112,15 @@ function App() {
     };
   }, []);
 
-  // Native webviews always sit above the HTML UI and would swallow the mouse, so hide
-  // them while a dialog is open or the sidebar is being resized.
+  // Native webviews always sit above the HTML UI and would cover a dialog, so hide
+  // them while one is open. Resizing keeps them visible: a drag that starts on the
+  // splitter keeps its pointer events even over the webview.
   useEffect(() => {
-    api.setOverlay(dialog !== null || resizing);
-  }, [dialog, resizing]);
+    api.setOverlay(dialog !== null);
+  }, [dialog]);
+
+  // Set when + is clicked so the new tab's address bar takes focus with its URL selected.
+  const [focusAddressFor, setFocusAddressFor] = useState<string | null>(null);
 
   const openAccount = (id: string) =>
     run(async () => {
@@ -341,7 +345,8 @@ function App() {
               </button>
               <AddressBar
                 key={activeTab ?? active.account.id}
-                url={page ? displayUrl(page.url) : (active.account.url ?? active.site.url)}
+                url={page?.url ?? active.account.url ?? active.site.url}
+                autoFocus={activeTab !== null && activeTab === focusAddressFor}
                 onGo={(url) => activeTab && run(() => api.navigate(activeTab, "go", url))}
               />
             </>
@@ -361,7 +366,7 @@ function App() {
           <div className="tabbar">
             {(accountTabs?.tabs ?? []).map((tabId) => {
               const p = pages[tabId];
-              const label = p?.title || (p?.url && displayUrl(p.url) ? hostOf(p.url) : "新标签页");
+              const label = p?.title || (p?.url ? hostOf(p.url) : "新标签页");
               return (
                 <div key={tabId} className={`tab ${tabId === activeTab ? "active" : ""}`} title={p?.url}>
                   <button
@@ -388,14 +393,7 @@ function App() {
               title="新建标签页"
               aria-label="新建标签页"
               onClick={() =>
-                run(async () => {
-                  const tabId = await api.newTab(active.account.id, true);
-                  // about:blank may not report a page load, so record it here.
-                  setPages((p) => ({
-                    ...p,
-                    [tabId]: p[tabId] ?? { accountId: active.account.id, tabId, url: "about:blank", title: null, loading: false },
-                  }));
-                })
+                run(async () => setFocusAddressFor(await api.newTab(active.account.id)))
               }
             >
               <Icon name="plus" />
@@ -435,30 +433,42 @@ function hostOf(url: string) {
   }
 }
 
-// A blank new tab shows an empty address bar rather than "about:blank".
-function displayUrl(url: string) {
-  return url.startsWith("about:") ? "" : url;
-}
-
-function AddressBar({ url, onGo }: { url: string; onGo: (url: string) => void }) {
+function AddressBar({ url, autoFocus, onGo }: { url: string; autoFocus: boolean; onGo: (url: string) => void }) {
   const [value, setValue] = useState(url);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Set while the user has typed something not yet submitted; page loads must not overwrite it.
+  const dirty = useRef(false);
   useEffect(() => {
+    if (dirty.current) return;
     setValue(url);
-    if (url === "") inputRef.current?.focus();
+    // A redirect (e.g. to a sign-in page) must not drop the selection that lets a paste replace the URL.
+    const el = inputRef.current;
+    if (el && document.activeElement === el) requestAnimationFrame(() => el.select());
   }, [url]);
+  // Selected, so a paste replaces the home page URL.
+  useEffect(() => {
+    if (autoFocus) inputRef.current?.select();
+  }, [autoFocus]);
   return (
     <form
       className="address"
       onSubmit={(e) => {
         e.preventDefault();
+        dirty.current = false;
         onGo(value);
       }}
     >
       <input
         ref={inputRef}
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={(e) => {
+          dirty.current = true;
+          setValue(e.target.value);
+        }}
+        onBlur={() => {
+          dirty.current = false;
+          setValue(url);
+        }}
         placeholder="输入或粘贴网址，按回车打开"
         spellCheck={false}
       />
