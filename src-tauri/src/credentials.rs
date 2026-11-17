@@ -40,6 +40,30 @@ pub fn set(account_id: Uuid, cred: &Credential) -> Result<(), String> {
         .map_err(|e| format!("写入钥匙串失败：{e}"))
 }
 
+/// Whether a saved login exists, read from the item's attributes only. Unlike
+/// `get`, this does not touch the secret, so macOS does not ask for the password.
+#[cfg(target_os = "macos")]
+pub fn exists(account_id: Uuid) -> Result<bool, String> {
+    use security_framework::item::{ItemClass, ItemSearchOptions};
+    let found = ItemSearchOptions::new()
+        .class(ItemClass::generic_password())
+        .service(SERVICE)
+        .account(&account_id.to_string())
+        .load_attributes(true)
+        .search();
+    match found {
+        Ok(items) => Ok(!items.is_empty()),
+        // errSecItemNotFound
+        Err(e) if e.code() == -25300 => Ok(false),
+        Err(e) => Err(format!("读取钥匙串失败：{e}")),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn exists(account_id: Uuid) -> Result<bool, String> {
+    get(account_id).map(|c| c.is_some())
+}
+
 pub fn delete(account_id: Uuid) -> Result<(), String> {
     match entry(account_id)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),

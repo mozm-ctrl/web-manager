@@ -12,6 +12,10 @@ pub struct Account {
     /// Opened instead of the site's URL when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Copy of the saved login's username, so it can be shown without unlocking
+    /// the Keychain. The password itself only ever lives in the Keychain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -545,7 +545,11 @@ function CredentialDialog({
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
-  const [cred, setCred] = useState<Credential>({ username: "", password: "", note: "" });
+  // The username comes from sites.json, so it shows without a Keychain prompt. The
+  // password is read from the Keychain only when needed (显示 / 复制 / 编辑), which asks
+  // for the Mac password at most once per account until the app quits.
+  const [cred, setCred] = useState<Credential>({ username: account.username ?? "", password: "", note: "" });
+  const [unlocked, setUnlocked] = useState(false);
   // The account's home address (kept in sites.json, not the keychain); empty means the site's URL.
   const [address, setAddress] = useState(account.url ?? site.url);
   const [loaded, setLoaded] = useState(false);
@@ -555,10 +559,15 @@ function CredentialDialog({
 
   useEffect(() => {
     api
-      .getCredential(account.id)
-      .then((c) => {
-        if (c) setCred(c);
-        else setEditing(true);
+      .credentialStatus(account.id)
+      .then(({ saved, credential }) => {
+        if (credential) {
+          setCred(credential);
+          setUnlocked(true);
+        } else if (!saved) {
+          setUnlocked(true);
+          setEditing(true);
+        }
         setLoaded(true);
       })
       .catch((e) => {
@@ -567,7 +576,24 @@ function CredentialDialog({
       });
   }, [account.id]);
 
-  const copy = async (label: string, text: string) => {
+  // Reads the saved login from the Keychain; resolves to null if that failed.
+  const unlock = async (): Promise<Credential | null> => {
+    if (unlocked) return cred;
+    try {
+      const c = (await api.getCredential(account.id)) ?? { username: "", password: "", note: "" };
+      setCred(c);
+      setUnlocked(true);
+      setMessage(null);
+      return c;
+    } catch (e) {
+      setMessage(String(e));
+      return null;
+    }
+  };
+
+  const copy = async (key: "username" | "password", label: string) => {
+    const text = key === "username" && !unlocked ? cred.username : (await unlock())?.[key];
+    if (text === undefined) return;
     try {
       await writeText(text);
       setMessage(`已复制${label}`);
@@ -588,13 +614,16 @@ function CredentialDialog({
     }
   };
 
+  // Before unlocking, a saved password is shown as dots without its real length.
+  const shown = (key: "username" | "password") => (key === "password" && !unlocked ? "••••••••" : cred[key]);
+
   const field = (key: "username" | "password", label: string, placeholder: string, secret = false) => (
     <label>
       {label}
       <div className="field-row">
         <input
           type={secret && !reveal ? "password" : "text"}
-          value={cred[key]}
+          value={shown(key)}
           readOnly={!editing}
           onChange={(e) => setCred((c) => ({ ...c, [key]: e.target.value }))}
           placeholder={editing ? placeholder : ""}
@@ -603,7 +632,14 @@ function CredentialDialog({
           autoComplete="off"
         />
         {secret && (
-          <button type="button" aria-label={reveal ? "隐藏密码" : "显示密码"} onClick={() => setReveal((r) => !r)}>
+          <button
+            type="button"
+            aria-label={reveal ? "隐藏密码" : "显示密码"}
+            onClick={async () => {
+              if (reveal) setReveal(false);
+              else if (await unlock()) setReveal(true);
+            }}
+          >
             {reveal ? "隐藏" : "显示"}
           </button>
         )}
@@ -611,8 +647,8 @@ function CredentialDialog({
           <button
             type="button"
             aria-label={`复制${label}`}
-            disabled={!cred[key]}
-            onClick={() => copy(label, cred[key])}
+            disabled={!shown(key)}
+            onClick={() => copy(key, label)}
           >
             复制
           </button>
@@ -653,7 +689,7 @@ function CredentialDialog({
           </>
         )}
         <p className="hint-text">
-          {message ?? "打开这个账号时进入「地址」里的网址。账号密码保存在系统钥匙串里，不会写进 sites.json。"}
+          {message ?? "打开这个账号时进入「地址」里的网址。密码只保存在系统钥匙串里，点「显示」时才读取。"}
         </p>
         <div className="dialog-actions">
           {editing ? (
@@ -667,7 +703,12 @@ function CredentialDialog({
             </>
           ) : (
             <>
-              <button type="button" onClick={() => setEditing(true)}>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (await unlock()) setEditing(true);
+                }}
+              >
                 编辑
               </button>
               <button type="button" className="primary" onClick={onClose}>

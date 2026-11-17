@@ -1,6 +1,6 @@
 [package]
 name = "web-manager"
-version = "0.7.7"
+version = "0.7.8"
 description = "Multi-site, multi-account web manager"
 authors = ["mozm-ctrl"]
 edition = "2024"
@@ -29,6 +29,8 @@ serde_json = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Snapshot of the account webview shown behind dialogs (see `snapshot_active`).
+# Checks whether a saved login exists without reading it (no Keychain prompt).
+security-framework = "3"
 objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSDictionary", "NSError", "NSString"] }

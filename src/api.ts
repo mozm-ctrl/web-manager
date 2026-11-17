@@ -5,6 +5,14 @@ export interface Account {
   name: string;
   /** Home address; the site's URL is used when absent. */
   url?: string;
+  /** Username of the saved login, readable without a Keychain prompt. */
+  username?: string;
+}
+
+export interface CredentialStatus {
+  saved: boolean;
+  /** Present once the login was read this session. */
+  credential: Credential | null;
 }
 
 export interface Site {
@@ -68,6 +76,7 @@ export const api = {
   closeTab: (tabId: string) => invoke<void>("close_tab", { tabId }),
   navigate: (tabId: string, action: NavAction, url?: string) =>
     invoke<void>("navigate_tab", { tabId, action, url }),
+  credentialStatus: (id: string) => invoke<CredentialStatus>("credential_status", { id }),
   getCredential: (id: string) => invoke<Credential | null>("get_credential", { id }),
   setCredential: (id: string, credential: Credential) =>
     invoke<void>("set_credential", { id, credential }),

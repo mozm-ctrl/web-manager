@@ -4909,7 +4909,7 @@ dependencies = [
 
 [[package]]
 name = "web-manager"
-version = "0.7.7"
+version = "0.7.8"
 dependencies = [
  "block2",
  "keyring",
@@ -4917,6 +4917,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-web-kit",
+ "security-framework 3.7.0",
  "serde",
  "serde_json",
  "tauri",

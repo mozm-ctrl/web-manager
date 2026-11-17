@@ -439,6 +439,7 @@ fn add_account(state: State<'_, AppState>, site_id: String, name: String) -> Res
             name.to_string()
         },
         url: None,
+        username: None,
     };
     site.accounts.push(account.clone());
     state.save(&store)?;
@@ -647,9 +648,44 @@ fn navigate_tab(app: AppHandle, tab_id: String, action: String, url: Option<Stri
     .map_err(|e| e.to_string())
 }
 
+/// What the credential dialog can show without a Keychain prompt.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CredentialStatus {
+    saved: bool,
+    /// Set once the login was read this session.
+    credential: Option<credentials::Credential>,
+}
+
+#[tauri::command]
+fn credential_status(state: State<'_, AppState>, id: String) -> Result<CredentialStatus, String> {
+    let id = parse_id(&id)?;
+    if let Some(c) = state.credential_cache.lock().unwrap().get(&id) {
+        return Ok(CredentialStatus { saved: c.is_some(), credential: c.clone() });
+    }
+    Ok(CredentialStatus { saved: credentials::exists(id)?, credential: None })
+}
+
+/// Reads the saved login, which may ask for the Mac password (once per account per session).
 #[tauri::command]
 fn get_credential(state: State<'_, AppState>, id: String) -> Result<Option<credentials::Credential>, String> {
-    cached_credential(&state.credential_cache, parse_id(&id)?, credentials::get)
+    let id = parse_id(&id)?;
+    let c = cached_credential(&state.credential_cache, id, credentials::get)?;
+    if let Some(c) = &c {
+        remember_username(&state, id, &c.username)?;
+    }
+    Ok(c)
+}
+
+fn remember_username(state: &AppState, id: Uuid, username: &str) -> Result<(), String> {
+    let username = (!username.is_empty()).then(|| username.to_string());
+    let mut store = state.store.lock().unwrap();
+    let Some(acc) = store.account_mut(id) else { return Ok(()) };
+    if acc.username == username {
+        return Ok(());
+    }
+    acc.username = username;
+    state.save(&store)
 }
 
 /// Reads through `cache`, so `read` (the Keychain) runs at most once per account.
@@ -707,6 +743,7 @@ fn set_credential(
     let id = parse_id(&id)?;
     state.store.lock().unwrap().account_mut(id).ok_or("账号不存在")?;
     credentials::set(id, &credential)?;
+    remember_username(&state, id, &credential.username)?;
     let empty = credential.username.is_empty() && credential.password.is_empty() && credential.note.is_empty();
     state.credential_cache.lock().unwrap().insert(id, (!empty).then_some(credential));
     Ok(())
@@ -825,6 +862,7 @@ pub fn run() {
             navigate_tab,
             get_credential,
             set_credential,
+            credential_status,
             snapshot_active,
             clear_all_data,
         ])
