@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { api, type Account, type Credential, type PageInfo, type Site, type TabsInfo } from "./api";
+import { api, type Account, type Credential, type PageEvent, type PageInfo, type Site, type TabsInfo } from "./api";
 import { Icon } from "./Icon";
 import "./App.css";
 
@@ -37,6 +37,8 @@ function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "1");
   const [dark, setDark] = useState(() => localStorage.getItem("theme") === "dark");
   const contentRef = useRef<HTMLDivElement>(null);
+  // Per-tab timeouts that clear a loading state the engine never finished (see setLoading).
+  const loadTimers = useRef<Record<string, number>>({});
 
   const toggleSidebar = () =>
     setSidebarCollapsed((c) => {
@@ -66,12 +68,14 @@ function App() {
 
   useEffect(() => {
     refresh();
-    const unlisten = listen<PageInfo>("account-page", ({ payload }) => {
+    const unlisten = listen<PageEvent>("account-page", ({ payload }) => {
+      if (payload.loading === false) window.clearTimeout(loadTimers.current[payload.tabId]);
       setPages((p) => ({
         ...p,
         [payload.tabId]: {
           ...payload,
           title: payload.title ?? p[payload.tabId]?.title ?? null,
+          loading: payload.loading ?? p[payload.tabId]?.loading ?? false,
         },
       }));
     });
@@ -134,8 +138,33 @@ function App() {
   const accountTabs = activeId ? tabs[activeId] : undefined;
   const activeTab = accountTabs?.activeTab ?? null;
   const page = activeTab ? pages[activeTab] : undefined;
-  const nav = (action: "back" | "forward" | "reload" | "home") =>
-    activeTab && run(() => api.navigate(activeTab, action));
+  // The engine reports a load only once the server first responds, so mark the tab
+  // as loading as soon as we start one; a page that never responds is cleared after
+  // a while so the spinner cannot spin forever.
+  const setLoading = useCallback((tabId: string, loading: boolean, accountId?: string) => {
+    window.clearTimeout(loadTimers.current[tabId]);
+    if (loading) loadTimers.current[tabId] = window.setTimeout(() => setLoading(tabId, false), 30000);
+    setPages((p) => {
+      if (p[tabId]) return { ...p, [tabId]: { ...p[tabId], loading } };
+      // A brand-new tab has no page info yet.
+      if (!accountId) return p;
+      return { ...p, [tabId]: { accountId, tabId, url: "", title: null, loading } };
+    });
+  }, []);
+
+  const nav = (action: "back" | "forward" | "reload" | "stop" | "home" | "go", url?: string) =>
+    activeTab &&
+    run(async () => {
+      if (action !== "stop") setLoading(activeTab, true);
+      try {
+        await api.navigate(activeTab, action, url);
+      } catch (e) {
+        setLoading(activeTab, false);
+        throw e;
+      } finally {
+        if (action === "stop") setLoading(activeTab, false);
+      }
+    });
 
   return (
     <div className={`app ${IS_MAC ? "mac" : ""} ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -329,9 +358,15 @@ function App() {
               <button className="icon" title="前进" aria-label="前进" onClick={() => nav("forward")}>
                 <Icon name="forward" />
               </button>
-              <button className="icon" title="刷新" aria-label="刷新" onClick={() => nav("reload")}>
-                <Icon name="reload" />
-              </button>
+              {page?.loading ? (
+                <button className="icon" title="停止加载" aria-label="停止加载" onClick={() => nav("stop")}>
+                  <Icon name="close" />
+                </button>
+              ) : (
+                <button className="icon" title="刷新" aria-label="刷新" onClick={() => nav("reload")}>
+                  <Icon name="reload" />
+                </button>
+              )}
               <button className="icon" title="回到首页" aria-label="回到首页" onClick={() => nav("home")}>
                 <Icon name="home" />
               </button>
@@ -345,9 +380,9 @@ function App() {
               </button>
               <AddressBar
                 key={activeTab ?? active.account.id}
-                url={page?.url ?? active.account.url ?? active.site.url}
+                url={page?.url || active.account.url || active.site.url}
                 autoFocus={activeTab !== null && activeTab === focusAddressFor}
-                onGo={(url) => activeTab && run(() => api.navigate(activeTab, "go", url))}
+                onGo={(url) => nav("go", url)}
               />
             </>
           ) : (
@@ -374,8 +409,8 @@ function App() {
                     aria-label={`标签 ${label}`}
                     onClick={() => run(() => api.selectTab(tabId))}
                   >
-                    {p?.loading ? "⋯ " : ""}
-                    {label}
+                    {p?.loading && <span className="spinner" role="status" aria-label="加载中" />}
+                    <span className="tab-label">{label}</span>
                   </button>
                   <button
                     className="icon tab-close"
@@ -393,7 +428,11 @@ function App() {
               title="新建标签页"
               aria-label="新建标签页"
               onClick={() =>
-                run(async () => setFocusAddressFor(await api.newTab(active.account.id)))
+                run(async () => {
+                  const tabId = await api.newTab(active.account.id);
+                  setLoading(tabId, true, active.account.id);
+                  setFocusAddressFor(tabId);
+                })
               }
             >
               <Icon name="plus" />

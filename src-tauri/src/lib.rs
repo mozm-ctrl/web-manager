@@ -71,7 +71,8 @@ struct PageInfo {
     tab_id: String,
     url: String,
     title: Option<String>,
-    loading: bool,
+    /// `None` when the event says nothing about loading (e.g. a title change).
+    loading: Option<bool>,
 }
 
 #[derive(Clone, Serialize)]
@@ -196,7 +197,7 @@ async fn delete_accounts_data(app: &AppHandle, ids: Vec<Uuid>) {
     }
 }
 
-fn emit_page(app: &AppHandle, account_id: Uuid, tab_id: Uuid, url: &Url, title: Option<String>, loading: bool) {
+fn emit_page(app: &AppHandle, account_id: Uuid, tab_id: Uuid, url: &Url, title: Option<String>, loading: Option<bool>) {
     let _ = app.emit_to(
         "main",
         "account-page",
@@ -209,6 +210,11 @@ fn emit_page(app: &AppHandle, account_id: Uuid, tab_id: Uuid, url: &Url, title: 
         },
     );
 }
+
+/// WKWebView's default user agent has no `Version/… Safari/…` part. Some sites
+/// (notably Chinese ones such as Baidu) treat that as an unknown browser and serve
+/// it differently, e.g. redirecting in a loop, so present as Safari.
+const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15";
 
 /// Pages ask for a new tab by navigating to this URL (see `NEW_TAB_SCRIPT`).
 const NEW_TAB_PREFIX: &str = "https://new-tab.web-manager.invalid/?u=";
@@ -263,6 +269,7 @@ fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid,
 
     #[allow(unused_mut)]
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
+        .user_agent(USER_AGENT)
         .initialization_script(NEW_TAB_SCRIPT)
         .on_navigation(move |url| {
             let Some(rest) = url.as_str().strip_prefix(NEW_TAB_PREFIX) else {
@@ -283,11 +290,11 @@ fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid,
         })
         .on_page_load(move |_wv, payload| {
             let loading = matches!(payload.event(), PageLoadEvent::Started);
-            emit_page(&app_for_load, account_id, tab_id, payload.url(), None, loading);
+            emit_page(&app_for_load, account_id, tab_id, payload.url(), None, Some(loading));
         })
         .on_document_title_changed(move |wv, title| {
             if let Ok(url) = wv.url() {
-                emit_page(&app_for_title, account_id, tab_id, &url, Some(title), false);
+                emit_page(&app_for_title, account_id, tab_id, &url, Some(title), None);
             }
         })
         // target=_blank / window.open become a new tab of the same account, so they
@@ -617,6 +624,7 @@ fn navigate_tab(app: AppHandle, tab_id: String, action: String, url: Option<Stri
         "back" => wv.eval("history.back()"),
         "forward" => wv.eval("history.forward()"),
         "reload" => wv.eval("location.reload()"),
+        "stop" => wv.eval("window.stop()"),
         "home" | "go" => {
             let target = match url {
                 Some(u) => parse_url(&u)?,

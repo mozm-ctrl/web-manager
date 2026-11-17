@@ -22,6 +22,11 @@ export interface PageInfo {
   loading: boolean;
 }
 
+/** As emitted by the backend: `loading` is absent when the event does not change it. */
+export interface PageEvent extends Omit<PageInfo, "loading"> {
+  loading: boolean | null;
+}
+
 export interface TabsInfo {
   accountId: string;
   tabs: string[];
@@ -34,7 +39,7 @@ export interface Credential {
   note: string;
 }
 
-export type NavAction = "back" | "forward" | "reload" | "home" | "go";
+export type NavAction = "back" | "forward" | "reload" | "stop" | "home" | "go";
 
 export const api = {
   listSites: () => invoke<Site[]>("list_sites"),
