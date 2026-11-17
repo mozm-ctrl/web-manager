@@ -117,11 +117,29 @@ function App() {
   }, []);
 
   // Native webviews always sit above the HTML UI and would cover a dialog, so hide
-  // them while one is open. Resizing keeps them visible: a drag that starts on the
-  // splitter keeps its pointer events even over the webview.
+  // them while one is open, showing a snapshot of the page in their place so it
+  // stays visible behind the dialog. Resizing keeps them visible: a drag that starts
+  // on the splitter keeps its pointer events even over the webview.
+  const [snapshot, setSnapshot] = useState<string | null>(null);
+  const dialogOpen = dialog !== null;
   useEffect(() => {
-    api.setOverlay(dialog !== null);
-  }, [dialog]);
+    if (!dialogOpen) {
+      api.setOverlay(false).then(() => setSnapshot(null));
+      return;
+    }
+    let cancelled = false;
+    api
+      .snapshotActive()
+      .catch(() => null)
+      .then((png) => {
+        if (cancelled) return;
+        setSnapshot(png);
+        api.setOverlay(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dialogOpen]);
 
   // Set when + is clicked so the new tab's address bar takes focus with its URL selected.
   const [focusAddressFor, setFocusAddressFor] = useState<string | null>(null);
@@ -440,6 +458,7 @@ function App() {
           </div>
         )}
         <div className="content" ref={contentRef}>
+          {snapshot && <img className="snapshot" src={snapshot} alt="" />}
           {!active && (
             <div className="placeholder">
               <h2>网页管理器</h2>

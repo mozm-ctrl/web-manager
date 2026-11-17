@@ -285,6 +285,16 @@ button.icon.theme-toggle {
   position: relative;
 }
 
+/* Stand-in for the hidden account page while a dialog is open. */
+.snapshot {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+}
+
 .placeholder {
   height: 100%;
   display: flex;

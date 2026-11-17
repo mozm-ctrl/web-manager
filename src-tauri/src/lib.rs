@@ -41,6 +41,9 @@ struct AppState {
     bounds: Mutex<Bounds>,
     /// When true (e.g. a dialog is open in the sidebar UI) the active account webview is hidden.
     overlay: Mutex<bool>,
+    /// Saved logins already read this session, so the Keychain prompt appears at most
+    /// once per account until the app quits. Memory only; never written anywhere.
+    credential_cache: Mutex<HashMap<Uuid, Option<credentials::Credential>>>,
 }
 
 #[derive(Default)]
@@ -177,6 +180,7 @@ async fn purge_account_data(app: &AppHandle, account_id: Uuid) -> Result<(), Str
 async fn delete_accounts_data(app: &AppHandle, ids: Vec<Uuid>) {
     let state = app.state::<AppState>();
     for id in ids {
+        state.credential_cache.lock().unwrap().remove(&id);
         if let Err(e) = credentials::delete(id) {
             eprintln!("failed to delete saved login for account {id}: {e}");
         }
@@ -644,8 +648,54 @@ fn navigate_tab(app: AppHandle, tab_id: String, action: String, url: Option<Stri
 }
 
 #[tauri::command]
-fn get_credential(id: String) -> Result<Option<credentials::Credential>, String> {
-    credentials::get(parse_id(&id)?)
+fn get_credential(state: State<'_, AppState>, id: String) -> Result<Option<credentials::Credential>, String> {
+    cached_credential(&state.credential_cache, parse_id(&id)?, credentials::get)
+}
+
+/// Reads through `cache`, so `read` (the Keychain) runs at most once per account.
+/// Errors are not cached: a dismissed Keychain prompt can be retried.
+fn cached_credential(
+    cache: &Mutex<HashMap<Uuid, Option<credentials::Credential>>>,
+    id: Uuid,
+    read: impl FnOnce(Uuid) -> Result<Option<credentials::Credential>, String>,
+) -> Result<Option<credentials::Credential>, String> {
+    if let Some(c) = cache.lock().unwrap().get(&id) {
+        return Ok(c.clone());
+    }
+    let c = read(id)?;
+    cache.lock().unwrap().insert(id, c.clone());
+    Ok(c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn credential_read_once_per_account() {
+        let cache = Mutex::new(HashMap::new());
+        let id = Uuid::new_v4();
+        let reads = Cell::new(0);
+        let read = |_| {
+            reads.set(reads.get() + 1);
+            Ok(Some(credentials::Credential { username: "u".into(), password: "p".into(), note: String::new() }))
+        };
+        for _ in 0..3 {
+            let c = cached_credential(&cache, id, read).unwrap().unwrap();
+            assert_eq!(c.username, "u");
+        }
+        assert_eq!(reads.get(), 1);
+    }
+
+    #[test]
+    fn credential_errors_are_retried() {
+        let cache = Mutex::new(HashMap::new());
+        let id = Uuid::new_v4();
+        assert!(cached_credential(&cache, id, |_| Err("denied".into())).is_err());
+        let c = cached_credential(&cache, id, |_| Ok(None)).unwrap();
+        assert!(c.is_none());
+    }
 }
 
 #[tauri::command]
@@ -656,7 +706,63 @@ fn set_credential(
 ) -> Result<(), String> {
     let id = parse_id(&id)?;
     state.store.lock().unwrap().account_mut(id).ok_or("账号不存在")?;
-    credentials::set(id, &credential)
+    credentials::set(id, &credential)?;
+    let empty = credential.username.is_empty() && credential.password.is_empty() && credential.note.is_empty();
+    state.credential_cache.lock().unwrap().insert(id, (!empty).then_some(credential));
+    Ok(())
+}
+
+/// A PNG (as a data URL) of the active account page, shown in its place while a
+/// dialog hides the native webview, so the page stays visible behind the dialog.
+#[tauri::command]
+async fn snapshot_active(app: AppHandle) -> Result<Option<String>, String> {
+    let tab = {
+        let state = app.state::<AppState>();
+        let active = *state.active.lock().unwrap();
+        let tabs = state.tabs.lock().unwrap();
+        active.and_then(|a| tabs.get(&a)).and_then(|t| t.active)
+    };
+    let Some(wv) = tab.and_then(|t| tab_webview(&app, &t)) else {
+        return Ok(None);
+    };
+    snapshot(&wv).await
+}
+
+#[cfg(target_os = "macos")]
+async fn snapshot(wv: &Webview) -> Result<Option<String>, String> {
+    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
+    use objc2_foundation::{NSDataBase64EncodingOptions, NSDictionary, NSError};
+    use objc2_web_kit::WKWebView;
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
+    let tx = std::sync::Mutex::new(Some(tx));
+    wv.with_webview(move |platform| {
+        // SAFETY: on macOS `inner()` is the WKWebView, and this closure runs on the main thread.
+        let wk: &WKWebView = unsafe { &*platform.inner().cast() };
+        let done = block2::RcBlock::new(move |image: *mut NSImage, _err: *mut NSError| {
+            // SAFETY: WebKit passes a valid NSImage or null.
+            let png = unsafe { image.as_ref() }.and_then(|image| {
+                let tiff = image.TIFFRepresentation()?;
+                let rep = NSBitmapImageRep::imageRepWithData(&tiff)?;
+                // SAFETY: an empty properties dictionary is valid.
+                let png = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }?;
+                let b64 = png.base64EncodedStringWithOptions(NSDataBase64EncodingOptions(0));
+                Some(format!("data:image/png;base64,{b64}"))
+            });
+            if let Some(tx) = tx.lock().unwrap().take() {
+                let _ = tx.send(png);
+            }
+        });
+        // SAFETY: a nil configuration snapshots the visible area.
+        unsafe { wk.takeSnapshotWithConfiguration_completionHandler(None, &done) };
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(rx.await.ok().flatten())
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn snapshot(_wv: &Webview) -> Result<Option<String>, String> {
+    Ok(None)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -679,6 +785,7 @@ pub fn run() {
                 tabs: Mutex::new(HashMap::new()),
                 bounds: Mutex::new(Bounds::default()),
                 overlay: Mutex::new(false),
+                credential_cache: Mutex::new(HashMap::new()),
             });
 
             // Retry data deletions that failed last time (e.g. files locked on Windows).
@@ -718,6 +825,7 @@ pub fn run() {
             navigate_tab,
             get_credential,
             set_credential,
+            snapshot_active,
             clear_all_data,
         ])
         .run(tauri::generate_context!())

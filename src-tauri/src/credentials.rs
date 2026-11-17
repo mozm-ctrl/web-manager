@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 const SERVICE: &str = "com.mozm.webmanager";
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Credential {
     #[serde(default)]
     pub username: String,
