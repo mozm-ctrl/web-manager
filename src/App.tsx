@@ -332,25 +332,6 @@ function App() {
           <button className="check-update" title="检查是否有新版本" onClick={checkForUpdate}>
             检查更新{version && <span className="version">v{version}</span>}
           </button>
-          <button
-            className="clear-all"
-            aria-label="清除所有数据"
-            onClick={() =>
-              setDialog({
-                kind: "confirm",
-                message: "清除所有网站、账号、登录状态和保存的账号密码？清除后无法恢复。",
-                onConfirm: async () => {
-                  await api.clearAllData();
-                  setActiveId(null);
-                  setTabs({});
-                  setPages({});
-                  await refresh();
-                },
-              })
-            }
-          >
-            清除所有数据
-          </button>
         </div>
       </aside>
       <div
