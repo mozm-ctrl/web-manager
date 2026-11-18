@@ -39,7 +39,8 @@ struct AppState {
     /// Open tabs per account (runtime only). All tabs of an account share its data store.
     tabs: Mutex<HashMap<Uuid, AccountTabs>>,
     bounds: Mutex<Bounds>,
-    /// When true (e.g. a dialog is open in the sidebar UI) the active account webview is hidden.
+    /// True while a dialog is open: the sidebar UI is raised above the account
+    /// webviews instead of below them (see `set_overlay`).
     overlay: Mutex<bool>,
     /// Saved logins already read this session, so the Keychain prompt appears at most
     /// once per account until the app quits. Memory only; never written anywhere.
@@ -343,18 +344,21 @@ fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid,
     }
     emit_tabs(app, account_id);
     apply_visibility(app);
+    // A new child view is added on top; keep the UI above it while a dialog is open.
+    if *state.overlay.lock().unwrap() {
+        raise_ui(app, true);
+    }
     Ok(tab_id)
 }
 
 fn apply_visibility(app: &AppHandle) {
     let state = app.state::<AppState>();
     let active = *state.active.lock().unwrap();
-    let overlay = *state.overlay.lock().unwrap();
     let tabs = state.tabs.lock().unwrap();
     for (account_id, t) in tabs.iter() {
         for tab in &t.tabs {
             if let Some(wv) = tab_webview(app, tab) {
-                if Some(*account_id) == active && t.active == Some(*tab) && !overlay {
+                if Some(*account_id) == active && t.active == Some(*tab) {
                     let _ = wv.set_bounds(rect(*state.bounds.lock().unwrap()));
                     let _ = wv.show();
                 } else {
@@ -584,10 +588,41 @@ fn set_content_bounds(app: AppHandle, mut bounds: Bounds) {
     }
 }
 
+/// Raises the sidebar UI above the account webviews while a dialog is open, and puts
+/// it back below them afterwards. The page is never hidden, so nothing behind the
+/// dialog changes: the UI's content area is transparent while raised (App.css).
 #[tauri::command]
 fn set_overlay(app: AppHandle, visible: bool) {
     *app.state::<AppState>().overlay.lock().unwrap() = visible;
-    apply_visibility(&app);
+    raise_ui(&app, visible);
+}
+
+/// Moves the main UI webview to the top (or bottom) of the window's child views.
+#[cfg(target_os = "macos")]
+fn raise_ui(app: &AppHandle, top: bool) {
+    use objc2_app_kit::{NSView, NSWindowOrderingMode};
+    let Some(main) = app.get_webview("main") else { return };
+    let _ = main.with_webview(move |platform| {
+        // SAFETY: on macOS `inner()` is the WKWebView (an NSView), and this closure runs
+        // on the main thread.
+        let view: &NSView = unsafe { &*platform.inner().cast() };
+        let Some(parent) = (unsafe { view.superview() }) else { return };
+        let order = if top { NSWindowOrderingMode::Above } else { NSWindowOrderingMode::Below };
+        // Re-adding a subview moves it without unloading it.
+        parent.addSubview_positioned_relativeTo(view, order, None);
+    });
+}
+
+/// Other platforms keep hiding the page behind dialogs.
+#[cfg(not(target_os = "macos"))]
+fn raise_ui(app: &AppHandle, top: bool) {
+    let state = app.state::<AppState>();
+    let active = *state.active.lock().unwrap();
+    let tabs = state.tabs.lock().unwrap();
+    let tab = active.and_then(|a| tabs.get(&a)).and_then(|t| t.active);
+    if let Some(wv) = tab.and_then(|t| tab_webview(app, &t)) {
+        let _ = if top { wv.hide() } else { wv.show() };
+    }
 }
 
 #[tauri::command]
@@ -718,59 +753,6 @@ fn set_credential(
     Ok(())
 }
 
-/// A PNG (as a data URL) of the active account page, shown in its place while a
-/// dialog hides the native webview, so the page stays visible behind the dialog.
-#[tauri::command]
-async fn snapshot_active(app: AppHandle) -> Result<Option<String>, String> {
-    let tab = {
-        let state = app.state::<AppState>();
-        let active = *state.active.lock().unwrap();
-        let tabs = state.tabs.lock().unwrap();
-        active.and_then(|a| tabs.get(&a)).and_then(|t| t.active)
-    };
-    let Some(wv) = tab.and_then(|t| tab_webview(&app, &t)) else {
-        return Ok(None);
-    };
-    snapshot(&wv).await
-}
-
-#[cfg(target_os = "macos")]
-async fn snapshot(wv: &Webview) -> Result<Option<String>, String> {
-    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
-    use objc2_foundation::{NSDataBase64EncodingOptions, NSDictionary, NSError};
-    use objc2_web_kit::WKWebView;
-
-    let (tx, rx) = tokio::sync::oneshot::channel::<Option<String>>();
-    let tx = std::sync::Mutex::new(Some(tx));
-    wv.with_webview(move |platform| {
-        // SAFETY: on macOS `inner()` is the WKWebView, and this closure runs on the main thread.
-        let wk: &WKWebView = unsafe { &*platform.inner().cast() };
-        let done = block2::RcBlock::new(move |image: *mut NSImage, _err: *mut NSError| {
-            // SAFETY: WebKit passes a valid NSImage or null.
-            let png = unsafe { image.as_ref() }.and_then(|image| {
-                let tiff = image.TIFFRepresentation()?;
-                let rep = NSBitmapImageRep::imageRepWithData(&tiff)?;
-                // SAFETY: an empty properties dictionary is valid.
-                let png = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }?;
-                let b64 = png.base64EncodedStringWithOptions(NSDataBase64EncodingOptions(0));
-                Some(format!("data:image/png;base64,{b64}"))
-            });
-            if let Some(tx) = tx.lock().unwrap().take() {
-                let _ = tx.send(png);
-            }
-        });
-        // SAFETY: a nil configuration snapshots the visible area.
-        unsafe { wk.takeSnapshotWithConfiguration_completionHandler(None, &done) };
-    })
-    .map_err(|e| e.to_string())?;
-    Ok(rx.await.ok().flatten())
-}
-
-#[cfg(not(target_os = "macos"))]
-async fn snapshot(_wv: &Webview) -> Result<Option<String>, String> {
-    Ok(None)
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -795,6 +777,13 @@ pub fn run() {
                 overlay: Mutex::new(false),
                 credential_cache: Mutex::new(HashMap::new()),
             });
+
+            // The UI is drawn over the account page while a dialog is open, with its
+            // content area transparent (see `set_overlay`); the HTML paints its own
+            // background otherwise.
+            if let Some(main) = app.get_webview("main") {
+                main.set_background_color(Some(tauri::webview::Color(0, 0, 0, 0)))?;
+            }
 
             // Retry data deletions that failed last time (e.g. files locked on Windows).
             if !pending.is_empty() {
@@ -834,7 +823,6 @@ pub fn run() {
             get_credential,
             set_credential,
             credential_status,
-            snapshot_active,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
