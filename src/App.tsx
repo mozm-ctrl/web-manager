@@ -372,11 +372,13 @@ function App() {
             aria-busy={checking}
           >
             {checking && <span className="spinner" role="status" aria-label="正在检查更新" />}
-            <span className="check-update-label">
-              {checking ? "正在检查…" : "检查更新"}
-              {updateAvailable && !checking && <span className="update-dot" role="status" aria-label="有新版本" />}
-            </span>
-            {version && <span className="version">v{version}</span>}
+            <span>{checking ? "正在检查…" : "检查更新"}</span>
+            {version && (
+              <span className="version-badge">
+                <span className="version">v{version}</span>
+                {updateAvailable && !checking && <span className="update-dot" role="status" aria-label="有新版本" />}
+              </span>
+            )}
           </button>
         </div>
       </aside>

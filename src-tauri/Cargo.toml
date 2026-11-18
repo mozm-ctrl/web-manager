@@ -1,6 +1,6 @@
 [package]
 name = "web-manager"
-version = "0.8.6"
+version = "0.8.7"
 description = "Multi-site, multi-account web manager"
 authors = ["mozm-ctrl"]
 edition = "2024"

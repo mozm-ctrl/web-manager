@@ -545,12 +545,14 @@ button.check-update:hover {
 }
 
 .check-update .version {
-  margin-left: 10px;
   opacity: 0.7;
 }
 
-.check-update-label {
+/* Holds the red dot at the top-right of the version number (outside .version so
+   the dot is not faded with it). */
+.version-badge {
   position: relative;
+  margin-left: 2px;
 }
 
 button.check-update {
