@@ -135,39 +135,30 @@ function App() {
     };
   }, []);
 
-  // Native webviews always sit above the HTML UI and would cover a dialog, so hide
-  // them while one is open, showing a snapshot of the page in their place so it
-  // stays visible behind the dialog. Resizing keeps them visible: a drag that starts
-  // on the splitter keeps its pointer events even over the webview.
-  const [snapshot, setSnapshot] = useState<string | null>(null);
-  // False until the page is hidden: the dialog stays invisible so it never shows
-  // half over the sidebar and half under the native page.
-  const [covered, setCovered] = useState(false);
+  // Native webviews sit above the HTML UI and would cover a dialog. While one is open,
+  // the UI is raised above them instead (set_overlay) with the content area left
+  // transparent, so the live page stays on screen behind the dialog — nothing is
+  // hidden or swapped, which is what used to flash. Resizing keeps the normal order:
+  // a drag that starts on the splitter keeps its pointer events even over the webview.
+  // `raised` is false until the UI is on top, so the dialog never shows half over the
+  // sidebar and half under the page.
+  const [raised, setRaised] = useState(false);
   const dialogOpen = dialog !== null;
   useEffect(() => {
     if (!dialogOpen) {
-      setCovered(false);
-      api.setOverlay(false).then(() => setSnapshot(null));
+      setRaised(false);
+      // Back below the page first, then make the content area opaque again.
+      api.setOverlay(false).finally(() => document.documentElement.classList.remove("over-page"));
       return;
     }
+    // Transparent first, then raise, so the raised UI never covers the page.
+    document.documentElement.classList.add("over-page");
     let cancelled = false;
     (async () => {
-      const png = await api.snapshotActive().catch(() => null);
+      await nextPaint();
       if (cancelled) return;
-      // Hiding the webview before the snapshot is on screen shows the empty content
-      // area for a frame or two, which flashes. So decode the image first, then wait
-      // for the frame that paints it before hiding.
-      if (png) {
-        const img = new Image();
-        img.src = png;
-        await img.decode().catch(() => {});
-        if (cancelled) return;
-        setSnapshot(png);
-        await nextPaint();
-        if (cancelled) return;
-      }
       await api.setOverlay(true).catch(() => {});
-      if (!cancelled) setCovered(true);
+      if (!cancelled) setRaised(true);
     })();
     return () => {
       cancelled = true;
@@ -475,7 +466,6 @@ function App() {
           </div>
         )}
         <div className="content" ref={contentRef}>
-          {snapshot && <img className="snapshot" src={snapshot} alt="" />}
           {!active && (
             <div className="placeholder">
               <h2>网页管理器</h2>
@@ -486,7 +476,7 @@ function App() {
       </main>
 
       {resizing && <div className="resize-overlay" />}
-      <div className={covered ? "" : "dialog-pending"}>
+      <div className={raised ? "" : "dialog-pending"}>
         {dialog?.kind === "update" ? (
           <UpdateDialog update={dialog.update} error={dialog.error} version={version} onClose={() => setDialog(null)} />
         ) : dialog?.kind === "credential" ? (

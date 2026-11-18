@@ -1,6 +1,6 @@
 [package]
 name = "web-manager"
-version = "0.8.2"
+version = "0.8.3"
 description = "Multi-site, multi-account web manager"
 authors = ["mozm-ctrl"]
 edition = "2024"
@@ -32,14 +32,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# Snapshot of the account webview shown behind dialogs (see `snapshot_active`).
 # Checks whether a saved login exists without reading it (no Keychain prompt).
 security-framework = "3"
-objc2 = "0.6"
-block2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSDictionary", "NSError", "NSString"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage", "NSImageRep", "NSBitmapImageRep"] }
-objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKSnapshotConfiguration"] }
+# Raises the sidebar UI above the account webviews while a dialog is open (see `raise_ui`).
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSGraphics"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
