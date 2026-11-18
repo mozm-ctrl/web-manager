@@ -23,6 +23,10 @@ const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 520;
 // macOS draws the traffic lights over our own title bar (titleBarStyle "Overlay").
 const IS_MAC = navigator.userAgent.includes("Mac");
+// While the app stays open, look for a new version this often.
+const UPDATE_CHECK_INTERVAL = 4 * 60 * 60 * 1000;
+// How often the clock is compared against that (see the update check below).
+const UPDATE_CHECK_TICK = 10 * 60 * 1000;
 
 function App() {
   const [sites, setSites] = useState<Site[]>([]);
@@ -62,19 +66,59 @@ function App() {
 
   const refresh = useCallback(async () => setSites(await api.listSites()), []);
 
-  // Checked once per launch; a failed check stays quiet until the user asks (检查更新).
+  // Checked at launch and then every few hours while the app stays open. Background
+  // checks stay quiet when there is nothing new or the check fails (检查更新 reports
+  // both), never cover another dialog, and skip a version put off with 以后再说 until
+  // the next launch.
   const [version, setVersion] = useState("");
+  // Red dot on 检查更新 while a newer version is known to exist.
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const dialogOpenRef = useRef(false);
+  useEffect(() => {
+    dialogOpenRef.current = dialog !== null;
+  }, [dialog]);
+  const deferred = useRef(new Set<string>());
   useEffect(() => {
     getVersion().then(setVersion);
-    check()
-      .then((update) => update && setDialog((d) => d ?? { kind: "update", update }))
-      .catch((e) => console.warn("update check failed:", e));
+    let last = 0;
+    const background = () => {
+      last = Date.now();
+      check()
+        .then((update) => {
+          setUpdateAvailable(update !== null);
+          if (!update) return;
+          if (deferred.current.has(update.version) || dialogOpenRef.current) {
+            // Busy with another dialog: try again on the next tick.
+            if (!deferred.current.has(update.version)) last = 0;
+            update.close().catch(() => {});
+            return;
+          }
+          setDialog({ kind: "update", update });
+        })
+        .catch((e) => console.warn("update check failed:", e));
+    };
+    background();
+    // Compared against the clock instead of one long timer, so a Mac that slept
+    // through the interval checks shortly after it wakes.
+    const timer = window.setInterval(() => {
+      if (Date.now() - last >= UPDATE_CHECK_INTERVAL) background();
+    }, UPDATE_CHECK_TICK);
+    return () => window.clearInterval(timer);
   }, []);
 
-  const checkForUpdate = () =>
+  // Spinner on 检查更新 while a check the user asked for is running.
+  const [checking, setChecking] = useState(false);
+  const checkForUpdate = () => {
+    if (checking) return;
+    setChecking(true);
     check()
-      .then((update) => setDialog({ kind: "update", update }))
-      .catch((e) => setDialog({ kind: "update", update: null, error: String(e) }));
+      .then((update) => {
+        setUpdateAvailable(update !== null);
+        setDialog({ kind: "update", update });
+      })
+      .catch((e) => setDialog({ kind: "update", update: null, error: String(e) }))
+      .finally(() => setChecking(false));
+  };
 
   const run = useCallback(async (fn: () => Promise<unknown>) => {
     try {
@@ -320,8 +364,19 @@ function App() {
           </div>
         )}
         <div className="sidebar-footer">
-          <button className="check-update" title="检查是否有新版本" onClick={checkForUpdate}>
-            检查更新{version && <span className="version">v{version}</span>}
+          <button
+            className="check-update"
+            title={updateAvailable ? "有新版本，点击查看" : "检查是否有新版本"}
+            onClick={checkForUpdate}
+            disabled={checking}
+            aria-busy={checking}
+          >
+            {checking && <span className="spinner" role="status" aria-label="正在检查更新" />}
+            <span className="check-update-label">
+              {checking ? "正在检查…" : "检查更新"}
+              {updateAvailable && !checking && <span className="update-dot" role="status" aria-label="有新版本" />}
+            </span>
+            {version && <span className="version">v{version}</span>}
           </button>
         </div>
       </aside>
@@ -478,7 +533,15 @@ function App() {
       {resizing && <div className="resize-overlay" />}
       <div className={raised ? "" : "dialog-pending"}>
         {dialog?.kind === "update" ? (
-          <UpdateDialog update={dialog.update} error={dialog.error} version={version} onClose={() => setDialog(null)} />
+          <UpdateDialog
+            update={dialog.update}
+            error={dialog.error}
+            version={version}
+            onClose={() => {
+              if (dialog.update) deferred.current.add(dialog.update.version);
+              setDialog(null);
+            }}
+          />
         ) : dialog?.kind === "credential" ? (
           <CredentialDialog
             account={dialog.account}
