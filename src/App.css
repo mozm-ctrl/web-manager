@@ -8,6 +8,7 @@
   --muted: #6e7781;
   --hover: #eef1f4;
   --selected: #ddf4ff;
+  --selected-hover: #b6e3ff;
   --splitter-active: #dfe5eb;
   --danger-bg: #ffebe9;
   --accent: #0969da;
@@ -25,6 +26,7 @@
   --muted: #8d96a0;
   --hover: #21262d;
   --selected: #1b2f45;
+  --selected-hover: #24466b;
   --splitter-active: #3d444d;
   --danger-bg: #3c1618;
   --accent: #4493f8;
@@ -204,6 +206,11 @@ button.icon.danger:hover {
 .account-row.active {
   background: var(--selected);
   color: var(--accent);
+}
+
+/* On the light-blue selected row a gray hover square stood out; keep it blue. */
+.account-row.active button.icon:hover {
+  background: var(--selected-hover);
 }
 
 .account-name {
