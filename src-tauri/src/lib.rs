@@ -273,7 +273,7 @@ fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid,
     let app_for_title = app.clone();
 
     #[allow(unused_mut)]
-    let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url))
+    let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url.clone()))
         .user_agent(USER_AGENT)
         .initialization_script(NEW_TAB_SCRIPT)
         .on_navigation(move |url| {
@@ -342,6 +342,10 @@ fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid,
         t.tabs.push(tab_id);
         t.active = Some(tab_id);
     }
+    // The engine reports nothing until the site first responds, which can take a
+    // second or more; until then the tab would read 「新标签页」 over a blank page. Show
+    // where it is going, loading, from the start.
+    emit_page(app, account_id, tab_id, &url, None, Some(true));
     emit_tabs(app, account_id);
     apply_visibility(app);
     // A new child view is added on top; keep the UI above it while a dialog is open.
