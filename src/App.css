@@ -527,7 +527,6 @@ button.check-update {
   border: none;
   background: transparent;
   color: var(--muted);
-  margin-bottom: 4px;
 }
 
 button.check-update:hover {
@@ -538,18 +537,6 @@ button.check-update:hover {
 .check-update .version {
   margin-left: 6px;
   opacity: 0.7;
-}
-
-button.clear-all {
-  width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-}
-
-button.clear-all:hover {
-  background: var(--danger-bg);
-  color: var(--danger);
 }
 
 .resize-overlay {

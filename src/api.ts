@@ -80,6 +80,5 @@ export const api = {
   getCredential: (id: string) => invoke<Credential | null>("get_credential", { id }),
   setCredential: (id: string, credential: Credential) =>
     invoke<void>("set_credential", { id, credential }),
-  clearAllData: () => invoke<void>("clear_all_data"),
   snapshotActive: () => invoke<string | null>("snapshot_active"),
 };
