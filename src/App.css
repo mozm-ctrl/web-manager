@@ -545,8 +545,33 @@ button.check-update:hover {
 }
 
 .check-update .version {
-  margin-left: 6px;
+  margin-left: 10px;
   opacity: 0.7;
+}
+
+.check-update-label {
+  position: relative;
+}
+
+button.check-update {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+button.check-update:disabled {
+  cursor: default;
+}
+
+.update-dot {
+  position: absolute;
+  top: -1px;
+  right: -7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--danger);
 }
 
 .resize-overlay {
