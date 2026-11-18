@@ -8,7 +8,6 @@
   --muted: #6e7781;
   --hover: #eef1f4;
   --selected: #ddf4ff;
-  --selected-hover: #b6e3ff;
   --splitter-active: #dfe5eb;
   --danger-bg: #ffebe9;
   --accent: #0969da;
@@ -26,7 +25,6 @@
   --muted: #8d96a0;
   --hover: #21262d;
   --selected: #1b2f45;
-  --selected-hover: #24466b;
   --splitter-active: #3d444d;
   --danger-bg: #3c1618;
   --accent: #4493f8;
@@ -204,13 +202,18 @@ button.icon.danger:hover {
 }
 
 .account-row.active {
-  background: var(--selected);
-  color: var(--accent);
+  background: var(--hover);
 }
 
-/* On the light-blue selected row a gray hover square stood out; keep it blue. */
-.account-row.active button.icon:hover {
-  background: var(--selected-hover);
+/* The gray row already shows which account is open; no focus ring on its name. */
+.site-name:focus,
+.account-name:focus {
+  outline: none;
+}
+
+/* Row buttons only darken their icon on hover; a square behind them looked heavy. */
+.row-actions button.icon:hover {
+  background: transparent;
 }
 
 .account-name {
