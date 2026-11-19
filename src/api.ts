@@ -47,6 +47,17 @@ export interface Credential {
   note: string;
 }
 
+/** Payload of the `download` event; one id per download, reported again as it changes. */
+export interface DownloadInfo {
+  id: string;
+  accountId: string;
+  url: string;
+  fileName: string;
+  /** Absolute path in the Downloads folder; empty if the request was never seen. */
+  path: string;
+  state: "started" | "done" | "failed";
+}
+
 export type NavAction = "back" | "forward" | "reload" | "stop" | "home" | "go";
 
 export const api = {
@@ -80,4 +91,6 @@ export const api = {
   getCredential: (id: string) => invoke<Credential | null>("get_credential", { id }),
   setCredential: (id: string, credential: Credential) =>
     invoke<void>("set_credential", { id, credential }),
+  openDownload: (path: string) => invoke<void>("open_download", { path }),
+  revealDownload: (path: string) => invoke<void>("reveal_download", { path }),
 };

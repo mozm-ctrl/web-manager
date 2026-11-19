@@ -1,16 +1,17 @@
 mod credentials;
 mod store;
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, VecDeque};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::webview::{NewWindowResponse, PageLoadEvent};
+use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, State, Url, Webview,
     WebviewBuilder, WebviewUrl,
 };
+use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 
 use store::{Account, Site, Store};
@@ -45,6 +46,8 @@ struct AppState {
     /// Saved logins already read this session, so the Keychain prompt appears at most
     /// once per account until the app quits. Memory only; never written anywhere.
     credential_cache: Mutex<HashMap<Uuid, Option<credentials::Credential>>>,
+    /// Downloads started but not yet finished, by URL (see `handle_download`).
+    downloads: Mutex<DownloadQueue>,
 }
 
 #[derive(Default)]
@@ -271,6 +274,7 @@ fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid,
     let app_for_nav = app.clone();
     let app_for_load = app.clone();
     let app_for_title = app.clone();
+    let app_for_download = app.clone();
 
     #[allow(unused_mut)]
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url.clone()))
@@ -313,7 +317,10 @@ fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid,
                 }
             });
             NewWindowResponse::Deny
-        });
+        })
+        // Without a handler wry does not install a download delegate on macOS, and
+        // downloads do nothing at all.
+        .on_download(move |_wv, event| handle_download(&app_for_download, account_id, event));
 
     #[cfg(target_os = "macos")]
     {
@@ -353,6 +360,229 @@ fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid,
         raise_ui(app, true);
     }
     Ok(tab_id)
+}
+
+/// Downloads started but not yet finished, oldest first per URL: the same URL can be
+/// downloaded several times in a row, and `Finished` only names the URL.
+type DownloadQueue = HashMap<String, VecDeque<PendingDownload>>;
+
+#[derive(Debug, Clone, PartialEq)]
+struct PendingDownload {
+    id: Uuid,
+    account_id: Uuid,
+    path: PathBuf,
+}
+
+impl PendingDownload {
+    fn info(&self, url: &str, state: &str) -> DownloadInfo {
+        DownloadInfo {
+            id: self.id.to_string(),
+            account_id: self.account_id.to_string(),
+            url: url.to_string(),
+            file_name: self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            path: self.path.to_string_lossy().into_owned(),
+            state: state.to_string(),
+        }
+    }
+}
+
+/// Payload of the `download` event.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadInfo {
+    id: String,
+    account_id: String,
+    url: String,
+    file_name: String,
+    path: String,
+    /// "started" | "done" | "failed"
+    state: String,
+}
+
+impl DownloadInfo {
+    /// A download whose request was never seen; reported with what the URL tells.
+    fn unknown(account_id: Uuid, url: &str, state: &str) -> Self {
+        let file_name = Url::parse(url)
+            .ok()
+            .and_then(|u| u.path_segments().and_then(|mut s| s.next_back().map(str::to_string)))
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "download".into());
+        DownloadInfo {
+            id: Uuid::new_v4().to_string(),
+            account_id: account_id.to_string(),
+            url: url.to_string(),
+            file_name,
+            path: String::new(),
+            state: state.to_string(),
+        }
+    }
+}
+
+fn push_download(queue: &mut DownloadQueue, url: String, pending: PendingDownload) {
+    queue.entry(url).or_default().push_back(pending);
+}
+
+/// Takes the oldest unfinished download of `url`, if any.
+fn pop_download(queue: &mut DownloadQueue, url: &str) -> Option<PendingDownload> {
+    let list = queue.get_mut(url)?;
+    let pending = list.pop_front();
+    if list.is_empty() {
+        queue.remove(url);
+    }
+    pending
+}
+
+/// Makes a downloaded file name safe to join onto a directory: no path separators,
+/// control characters or surrounding blanks, and never empty, `.` or `..`.
+fn sanitize_file_name(name: &str) -> String {
+    let cleaned: String = name.chars().filter(|c| !matches!(c, '/' | '\\') && !c.is_control()).collect();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        "download".into()
+    } else {
+        cleaned.to_string()
+    }
+}
+
+/// `dir/name`, or `dir/stem (n).ext` with the smallest n that does not exist yet.
+/// The extension is what follows the last dot; a leading dot (`.env`) is not one.
+fn unique_path(dir: &Path, name: &str) -> PathBuf {
+    let name = sanitize_file_name(name);
+    let first = dir.join(&name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name.as_str(), ""),
+    };
+    (1u32..)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|p| !p.exists())
+        .expect("ran out of file names")
+}
+
+/// wry has already renamed a clashing download to `base (n).rest`, splitting at the
+/// first dot. Recovers the name the site suggested when that is what happened, i.e.
+/// when the name has that shape and the unsuffixed file exists in `dir`.
+fn undo_wry_rename(dir: &Path, name: &str) -> String {
+    let (head, ext) = match name.find('.') {
+        Some(i) => (&name[..i], &name[i..]),
+        None => (name, ""),
+    };
+    let original = head
+        .strip_suffix(')')
+        .and_then(|h| h.rsplit_once(" ("))
+        .filter(|(_, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+        .map(|(base, _)| format!("{base}{ext}"));
+    match original {
+        Some(o) if !o.is_empty() && dir.join(&o).exists() => o,
+        _ => name.to_string(),
+    }
+}
+
+/// Where a requested download is saved: the Downloads folder (`dir`; wry's own choice
+/// when unknown) under a name that does not overwrite anything.
+fn download_destination(proposed: &Path, dir: Option<PathBuf>) -> PathBuf {
+    let dir = dir
+        .or_else(|| proposed.parent().map(Path::to_path_buf))
+        .unwrap_or_default();
+    let name = proposed.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = match proposed.parent() {
+        Some(wry_dir) => undo_wry_rename(wry_dir, &name),
+        None => name,
+    };
+    unique_path(&dir, &name)
+}
+
+/// `path` without `.` / `..` components, resolved by text only (no file access).
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Accepts only an existing file inside `dir` (symlinks and `..` resolved), so the UI
+/// cannot be used to open arbitrary files.
+fn check_in_dir(dir: &Path, path: &Path) -> Result<PathBuf, String> {
+    const OUTSIDE: &str = "只能打开下载文件夹里的文件";
+    if !path.is_absolute() {
+        return Err(OUTSIDE.into());
+    }
+    let canon_dir = dir.canonicalize().unwrap_or_else(|_| normalize(dir));
+    match path.canonicalize() {
+        Ok(p) if p.starts_with(&canon_dir) && p != canon_dir => Ok(p),
+        Ok(_) => Err(OUTSIDE.into()),
+        Err(_) => {
+            let p = normalize(path);
+            if p.starts_with(normalize(dir)) || p.starts_with(&canon_dir) {
+                Err("文件已被移动或删除".into())
+            } else {
+                Err(OUTSIDE.into())
+            }
+        }
+    }
+}
+
+/// Saves page downloads to the Downloads folder and reports them to the UI. May run
+/// on the main thread: only path arithmetic and an event, nothing that blocks.
+fn handle_download(app: &AppHandle, account_id: Uuid, event: DownloadEvent<'_>) -> bool {
+    let state = app.state::<AppState>();
+    match event {
+        DownloadEvent::Requested { url, destination } => {
+            // wry's own de-duplication splits at the first dot (`a (1).v2.xlsx`); redo it.
+            let path = download_destination(destination, app.path().download_dir().ok());
+            *destination = path.clone();
+            let pending = PendingDownload { id: Uuid::new_v4(), account_id, path };
+            let info = pending.info(url.as_str(), "started");
+            push_download(&mut state.downloads.lock().unwrap(), url.to_string(), pending);
+            let _ = app.emit_to("main", "download", info);
+            true
+        }
+        DownloadEvent::Finished { url, success, .. } => {
+            // On macOS `path` is always None: look the download up by URL instead.
+            let state_name = if success { "done" } else { "failed" };
+            let pending = pop_download(&mut state.downloads.lock().unwrap(), url.as_str());
+            let info = match pending {
+                Some(p) => p.info(url.as_str(), state_name),
+                None => {
+                    eprintln!("download finished for an unknown request: {url}");
+                    DownloadInfo::unknown(account_id, url.as_str(), state_name)
+                }
+            };
+            let _ = app.emit_to("main", "download", info);
+            true
+        }
+        _ => true,
+    }
+}
+
+fn download_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path().download_dir().map_err(|e| format!("找不到下载文件夹：{e}"))
+}
+
+/// Opens a downloaded file with its default app.
+#[tauri::command]
+fn open_download(app: AppHandle, path: String) -> Result<(), String> {
+    let path = check_in_dir(&download_dir(&app)?, Path::new(&path))?;
+    app.opener()
+        .open_path(path.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Selects a downloaded file in Finder.
+#[tauri::command]
+fn reveal_download(app: AppHandle, path: String) -> Result<(), String> {
+    let path = check_in_dir(&download_dir(&app)?, Path::new(&path))?;
+    app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
 }
 
 fn apply_visibility(app: &AppHandle) {
@@ -740,6 +970,160 @@ mod tests {
         let c = cached_credential(&cache, id, |_| Ok(None)).unwrap();
         assert!(c.is_none());
     }
+
+    /// A fresh empty directory, removed when dropped.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!("web-manager-test-{}", Uuid::new_v4().simple()));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir.canonicalize().unwrap())
+        }
+
+        fn touch(&self, name: &str) -> PathBuf {
+            let p = self.0.join(name);
+            std::fs::write(&p, b"x").unwrap();
+            p
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn name_of(p: &Path) -> String {
+        p.file_name().unwrap().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn unique_path_keeps_a_free_name() {
+        let dir = TempDir::new();
+        assert_eq!(unique_path(&dir.0, "a.pdf"), dir.0.join("a.pdf"));
+    }
+
+    #[test]
+    fn unique_path_numbers_clashes() {
+        let dir = TempDir::new();
+        dir.touch("a.pdf");
+        assert_eq!(name_of(&unique_path(&dir.0, "a.pdf")), "a (1).pdf");
+        dir.touch("a (1).pdf");
+        assert_eq!(name_of(&unique_path(&dir.0, "a.pdf")), "a (2).pdf");
+    }
+
+    #[test]
+    fn unique_path_splits_at_the_last_dot() {
+        let dir = TempDir::new();
+        dir.touch("report.v2.xlsx");
+        assert_eq!(name_of(&unique_path(&dir.0, "report.v2.xlsx")), "report.v2 (1).xlsx");
+    }
+
+    #[test]
+    fn unique_path_without_extension_and_hidden_files() {
+        let dir = TempDir::new();
+        dir.touch("README");
+        dir.touch(".env");
+        assert_eq!(name_of(&unique_path(&dir.0, "README")), "README (1)");
+        assert_eq!(name_of(&unique_path(&dir.0, ".env")), ".env (1)");
+    }
+
+    #[test]
+    fn unique_path_stays_inside_dir() {
+        let dir = TempDir::new();
+        for name in ["../../etc/passwd", "a/b.txt", "", "..", ".", "  ", "a\\..\\b", "x\u{0}\n.txt"] {
+            let p = unique_path(&dir.0, name);
+            assert_eq!(p.parent(), Some(dir.0.as_path()), "{name:?} -> {p:?}");
+            let n = name_of(&p);
+            assert!(n != "." && n != ".." && !n.is_empty(), "{name:?} -> {n:?}");
+        }
+        assert_eq!(name_of(&unique_path(&dir.0, "")), "download");
+        assert_eq!(name_of(&unique_path(&dir.0, "..")), "download");
+        assert_eq!(name_of(&unique_path(&dir.0, "../../etc/passwd")), "....etcpasswd");
+    }
+
+    #[test]
+    fn unique_path_keeps_chinese_and_spaces() {
+        let dir = TempDir::new();
+        assert_eq!(name_of(&unique_path(&dir.0, "销售 报表.xlsx")), "销售 报表.xlsx");
+        dir.touch("销售 报表.xlsx");
+        assert_eq!(name_of(&unique_path(&dir.0, "销售 报表.xlsx")), "销售 报表 (1).xlsx");
+    }
+
+    #[test]
+    fn destination_undoes_wry_first_dot_rename() {
+        let dir = TempDir::new();
+        dir.touch("report.v2.xlsx");
+        // What wry proposes when report.v2.xlsx already exists.
+        let proposed = dir.0.join("report (1).v2.xlsx");
+        let p = download_destination(&proposed, Some(dir.0.clone()));
+        assert_eq!(name_of(&p), "report.v2 (1).xlsx");
+        // A site that really names its file like that keeps the name.
+        let p = download_destination(&dir.0.join("photo (3).jpg"), Some(dir.0.clone()));
+        assert_eq!(name_of(&p), "photo (3).jpg");
+        // Unknown Downloads folder: wry's directory is used.
+        let p = download_destination(&dir.0.join("new.txt"), None);
+        assert_eq!(p, dir.0.join("new.txt"));
+    }
+
+    #[test]
+    fn download_queue_is_first_in_first_out() {
+        let mut q = DownloadQueue::new();
+        let account = Uuid::new_v4();
+        let url = "https://example.com/a.zip";
+        let first = PendingDownload { id: Uuid::new_v4(), account_id: account, path: "/d/a.zip".into() };
+        let second = PendingDownload { id: Uuid::new_v4(), account_id: account, path: "/d/a (1).zip".into() };
+        push_download(&mut q, url.into(), first.clone());
+        push_download(&mut q, url.into(), second.clone());
+        assert_eq!(pop_download(&mut q, url), Some(first));
+        assert_eq!(pop_download(&mut q, url), Some(second));
+        assert_eq!(pop_download(&mut q, url), None);
+        assert!(q.is_empty());
+        assert_eq!(pop_download(&mut q, "https://unknown.example/x"), None);
+        let info = DownloadInfo::unknown(account, "https://unknown.example/files/x.pdf?y=1", "done");
+        assert_eq!(info.file_name, "x.pdf");
+        assert_eq!(DownloadInfo::unknown(account, "blob:xyz", "failed").file_name, "download");
+    }
+
+    #[test]
+    fn download_info_fields() {
+        let p = PendingDownload { id: Uuid::new_v4(), account_id: Uuid::new_v4(), path: "/d/销售 报表.xlsx".into() };
+        let v = serde_json::to_value(p.info("https://e.com/r", "started")).unwrap();
+        assert_eq!(v["fileName"], "销售 报表.xlsx");
+        assert_eq!(v["accountId"], p.account_id.to_string());
+        assert_eq!(v["path"], "/d/销售 报表.xlsx");
+        assert_eq!(v["state"], "started");
+    }
+
+    #[test]
+    fn open_only_files_in_the_download_dir() {
+        let root = TempDir::new();
+        let downloads = root.0.join("Downloads");
+        std::fs::create_dir_all(&downloads).unwrap();
+        let inside = downloads.join("a.pdf");
+        std::fs::write(&inside, b"x").unwrap();
+        let outside = root.touch("secret.txt");
+
+        assert_eq!(check_in_dir(&downloads, &inside), Ok(inside.clone()));
+        assert!(check_in_dir(&downloads, &outside).is_err());
+        assert!(check_in_dir(&downloads, &downloads.join("../secret.txt")).is_err());
+        assert!(check_in_dir(&downloads, &downloads.join("../../../etc/passwd")).is_err());
+        assert!(check_in_dir(&downloads, Path::new("a.pdf")).is_err());
+        assert!(check_in_dir(&downloads, &downloads).is_err());
+        assert!(check_in_dir(&downloads, Path::new("/etc/passwd")).is_err());
+        // A symlink inside the folder pointing out of it is refused too.
+        #[cfg(unix)]
+        {
+            let link = downloads.join("link.txt");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(check_in_dir(&downloads, &link).is_err());
+        }
+        // Deleted file: a clear message, not a crash.
+        assert_eq!(check_in_dir(&downloads, &downloads.join("gone.pdf")), Err("文件已被移动或删除".to_string()));
+        // ...but a missing file outside is still "outside".
+        assert_ne!(check_in_dir(&downloads, &downloads.join("../gone.pdf")), Err("文件已被移动或删除".to_string()));
+    }
 }
 
 #[tauri::command]
@@ -780,6 +1164,7 @@ pub fn run() {
                 bounds: Mutex::new(Bounds::default()),
                 overlay: Mutex::new(false),
                 credential_cache: Mutex::new(HashMap::new()),
+                downloads: Mutex::new(HashMap::new()),
             });
 
             // The UI is drawn over the account page while a dialog is open, with its
@@ -827,6 +1212,8 @@ pub fn run() {
             get_credential,
             set_credential,
             credential_status,
+            open_download,
+            reveal_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

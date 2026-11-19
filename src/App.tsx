@@ -5,7 +5,16 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { api, type Account, type Credential, type PageEvent, type PageInfo, type Site, type TabsInfo } from "./api";
+import {
+  api,
+  type Account,
+  type Credential,
+  type DownloadInfo,
+  type PageEvent,
+  type PageInfo,
+  type Site,
+  type TabsInfo,
+} from "./api";
 import { Icon } from "./Icon";
 import "./App.css";
 
@@ -16,6 +25,8 @@ type DialogState =
   | { kind: "renameAccount"; account: Account }
   | { kind: "credential"; account: Account; site: Site }
   | { kind: "confirm"; message: string; onConfirm: () => Promise<void> }
+  /** The download list, opened from the toolbar's download button. */
+  | { kind: "downloads" }
   /** `update` is null when there is no newer version, or the check failed (`error`). */
   | { kind: "update"; update: Update | null; error?: string };
 
@@ -27,6 +38,10 @@ const IS_MAC = navigator.userAgent.includes("Mac");
 const UPDATE_CHECK_INTERVAL = 4 * 60 * 60 * 1000;
 // How often the clock is compared against that (see the update check below).
 const UPDATE_CHECK_TICK = 10 * 60 * 1000;
+// The download list keeps this many entries (memory only, gone when the app quits).
+const MAX_DOWNLOADS = 50;
+// How long 「已下载 …」 replaces the window title.
+const DOWNLOAD_NOTICE_MS = 3000;
 
 function App() {
   const [sites, setSites] = useState<Site[]>([]);
@@ -119,6 +134,42 @@ function App() {
       .catch((e) => setDialog({ kind: "update", update: null, error: String(e) }))
       .finally(() => setChecking(false));
   };
+
+  // Downloads of this session, newest first.
+  const [downloads, setDownloads] = useState<DownloadInfo[]>([]);
+  // Red dot on the download button: something finished since the list was last opened.
+  const [downloadsUnseen, setDownloadsUnseen] = useState(false);
+  // 「已下载 文件名」 shown briefly in the title bar. The page's native webview covers
+  // the content area, so a toast there would either be hidden or block the page.
+  const [notice, setNotice] = useState<{ text: string; failed: boolean } | null>(null);
+  const noticeTimer = useRef(0);
+  const downloadsOpenRef = useRef(false);
+  useEffect(() => {
+    downloadsOpenRef.current = dialog?.kind === "downloads";
+    if (downloadsOpenRef.current) setDownloadsUnseen(false);
+  }, [dialog]);
+  useEffect(() => {
+    const unlisten = listen<DownloadInfo>("download", ({ payload }) => {
+      setDownloads((list) => {
+        const i = list.findIndex((d) => d.id === payload.id);
+        if (i < 0) return [payload, ...list].slice(0, MAX_DOWNLOADS);
+        const next = list.slice();
+        next[i] = payload;
+        return next;
+      });
+      if (payload.state === "started") return;
+      if (!downloadsOpenRef.current) setDownloadsUnseen(true);
+      const failed = payload.state === "failed";
+      setNotice({ text: failed ? `下载失败：${payload.fileName}` : `已下载 ${payload.fileName}`, failed });
+      window.clearTimeout(noticeTimer.current);
+      noticeTimer.current = window.setTimeout(() => setNotice(null), DOWNLOAD_NOTICE_MS);
+    });
+    return () => {
+      unlisten.then((f) => f());
+      window.clearTimeout(noticeTimer.current);
+    };
+  }, []);
+  const downloading = downloads.some((d) => d.state === "started");
 
   const run = useCallback(async (fn: () => Promise<unknown>) => {
     try {
@@ -417,11 +468,17 @@ function App() {
 
       <main className="main">
         <div className="titlebar" data-tauri-drag-region>
-          <span className="window-title" data-tauri-drag-region title={page?.title ?? ""}>
-            {active
-              ? `${active.site.name} · ${active.account.name}${page?.loading ? " · 加载中" : ""}`
-              : "网页管理器"}
-          </span>
+          {notice ? (
+            <span className={`window-title download-notice ${notice.failed ? "failed" : ""}`} data-tauri-drag-region role="status">
+              {notice.text}
+            </span>
+          ) : (
+            <span className="window-title" data-tauri-drag-region title={page?.title ?? ""}>
+              {active
+                ? `${active.site.name} · ${active.account.name}${page?.loading ? " · 加载中" : ""}`
+                : "网页管理器"}
+            </span>
+          )}
         </div>
         <div className="toolbar">
           <button
@@ -470,6 +527,18 @@ function App() {
             </>
           ) : (
             <span className="hint">选择左侧的账号打开网站</span>
+          )}
+          {downloads.length > 0 && (
+            <button
+              className="icon download-button"
+              title={downloading ? "正在下载…" : "下载列表"}
+              aria-label={downloading ? "正在下载，打开下载列表" : "打开下载列表"}
+              aria-busy={downloading}
+              onClick={() => setDialog({ kind: "downloads" })}
+            >
+              {downloading ? <span className="spinner" role="status" aria-label="正在下载" /> : <Icon name="download" />}
+              {downloadsUnseen && !downloading && <span className="update-dot" role="status" aria-label="有新下载" />}
+            </button>
           )}
           <button
             className="icon theme-toggle"
@@ -534,7 +603,17 @@ function App() {
 
       {resizing && <div className="resize-overlay" />}
       <div className={raised ? "" : "dialog-pending"}>
-        {dialog?.kind === "update" ? (
+        {dialog?.kind === "downloads" ? (
+          <DownloadsDialog
+            downloads={downloads}
+            sites={sites}
+            onClose={() => setDialog(null)}
+            onClear={() => {
+              setDownloads([]);
+              setDialog(null);
+            }}
+          />
+        ) : dialog?.kind === "update" ? (
           <UpdateDialog
             update={dialog.update}
             error={dialog.error}
@@ -612,6 +691,92 @@ function AddressBar({ url, autoFocus, onGo }: { url: string; autoFocus: boolean;
         spellCheck={false}
       />
     </form>
+  );
+}
+
+function DownloadsDialog({
+  downloads,
+  sites,
+  onClose,
+  onClear,
+}: {
+  downloads: DownloadInfo[];
+  sites: Site[];
+  onClose: () => void;
+  onClear: () => void;
+}) {
+  // Errors from opening / revealing, shown on that row (e.g. the file was deleted).
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const source = (accountId: string) => {
+    for (const site of sites) {
+      const acc = site.accounts.find((a) => a.id === accountId);
+      if (acc) return `${site.name} · ${acc.name}`;
+    }
+    return "已删除的账号";
+  };
+
+  const attempt = (d: DownloadInfo, fn: (path: string) => Promise<void>) =>
+    fn(d.path).then(
+      () => setErrors(({ [d.id]: _, ...rest }) => rest),
+      (e) => setErrors((errs) => ({ ...errs, [d.id]: String(e) })),
+    );
+
+  return (
+    <div className="backdrop downloads-backdrop" onClick={onClose}>
+      <div className="dialog downloads" role="dialog" aria-label="下载列表" onClick={(e) => e.stopPropagation()}>
+        <h3>下载</h3>
+        <ul className="download-list">
+          {downloads.map((d) => {
+            const done = d.state === "done" && d.path !== "";
+            return (
+              <li key={d.id} className={`download-row ${d.state}`}>
+                <div className="download-main">
+                  {done ? (
+                    <button className="download-name" title={`用默认程序打开 ${d.path}`} onClick={() => attempt(d, api.openDownload)}>
+                      {d.fileName}
+                    </button>
+                  ) : (
+                    <span className="download-name" title={d.path || d.url}>
+                      {d.fileName}
+                    </span>
+                  )}
+                  <span className="download-meta">
+                    {source(d.accountId)} ·{" "}
+                    {d.state === "started" ? "下载中" : d.state === "failed" ? "下载失败" : "完成"}
+                  </span>
+                  {errors[d.id] && <span className="download-error">{errors[d.id]}</span>}
+                </div>
+                {d.state === "started" && <span className="spinner" role="status" aria-label="下载中" />}
+                {done && (
+                  <button
+                    className="icon"
+                    title="在访达中显示"
+                    aria-label={`在访达中显示 ${d.fileName}`}
+                    onClick={() => attempt(d, api.revealDownload)}
+                  >
+                    <Icon name="search" />
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+        <div className="dialog-actions">
+          <button type="button" title="只清空列表，不删除已下载的文件" onClick={onClear}>
+            清除记录
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -910,7 +1075,7 @@ function Dialog({
   onDone,
   run,
 }: {
-  state: Exclude<DialogState, { kind: "credential" | "update" }>;
+  state: Exclude<DialogState, { kind: "credential" | "update" | "downloads" }>;
   onClose: () => void;
   onDone: () => Promise<void>;
   run: (fn: () => Promise<unknown>) => Promise<void>;

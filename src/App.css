@@ -267,6 +267,7 @@ button.icon.danger:hover {
 }
 
 .toolbar .hint {
+  flex: 1;
   color: var(--muted);
 }
 
@@ -581,4 +582,98 @@ button.check-update:disabled {
   inset: 0;
   z-index: 10;
   cursor: col-resize;
+}
+
+/* Download button: holds the red dot (same as the version number's) at its top right. */
+button.icon.download-button {
+  position: relative;
+}
+
+.download-button .update-dot {
+  top: 3px;
+  right: 3px;
+}
+
+.window-title.download-notice {
+  color: var(--accent);
+}
+
+.window-title.download-notice.failed {
+  color: var(--danger);
+}
+
+/* The download list drops down under the toolbar's right end instead of centering. */
+.backdrop.downloads-backdrop {
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 72px 8px 8px;
+}
+
+.dialog.downloads {
+  width: 380px;
+  max-height: 100%;
+  gap: 8px;
+  padding: 14px;
+}
+
+.download-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.download-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  border-radius: 6px;
+}
+
+.download-row:hover {
+  background: var(--hover);
+}
+
+.download-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.download-name {
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.download-name:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.download-row.failed .download-name {
+  color: var(--muted);
+}
+
+.download-meta {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-row.failed .download-meta,
+.download-error {
+  font-size: 12px;
+  color: var(--danger);
 }
