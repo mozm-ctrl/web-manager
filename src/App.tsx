@@ -528,18 +528,16 @@ function App() {
           ) : (
             <span className="hint">选择左侧的账号打开网站</span>
           )}
-          {downloads.length > 0 && (
-            <button
-              className="icon download-button"
-              title={downloading ? "正在下载…" : "下载列表"}
-              aria-label={downloading ? "正在下载，打开下载列表" : "打开下载列表"}
-              aria-busy={downloading}
-              onClick={() => setDialog({ kind: "downloads" })}
-            >
-              {downloading ? <span className="spinner" role="status" aria-label="正在下载" /> : <Icon name="download" />}
-              {downloadsUnseen && !downloading && <span className="update-dot" role="status" aria-label="有新下载" />}
-            </button>
-          )}
+          <button
+            className="icon download-button"
+            title={downloading ? "正在下载…" : "下载列表"}
+            aria-label={downloading ? "正在下载，打开下载列表" : "打开下载列表"}
+            aria-busy={downloading}
+            onClick={() => setDialog({ kind: "downloads" })}
+          >
+            {downloading ? <span className="spinner" role="status" aria-label="正在下载" /> : <Icon name="download" />}
+            {downloadsUnseen && !downloading && <span className="update-dot" role="status" aria-label="有新下载" />}
+          </button>
           <button
             className="icon theme-toggle"
             title={dark ? "切换到白天模式" : "切换到夜间模式"}
@@ -608,10 +606,7 @@ function App() {
             downloads={downloads}
             sites={sites}
             onClose={() => setDialog(null)}
-            onClear={() => {
-              setDownloads([]);
-              setDialog(null);
-            }}
+            onClear={() => setDownloads([])}
           />
         ) : dialog?.kind === "update" ? (
           <UpdateDialog
@@ -734,6 +729,7 @@ function DownloadsDialog({
     <div className="backdrop downloads-backdrop" onClick={onClose}>
       <div className="dialog downloads" role="dialog" aria-label="下载列表" onClick={(e) => e.stopPropagation()}>
         <h3>下载</h3>
+        {downloads.length === 0 && <p className="download-empty">还没有下载。网页里下载的文件会保存到「下载」文件夹，并显示在这里。</p>}
         <ul className="download-list">
           {downloads.map((d) => {
             const done = d.state === "done" && d.path !== "";
@@ -771,7 +767,7 @@ function DownloadsDialog({
           })}
         </ul>
         <div className="dialog-actions">
-          <button type="button" title="只清空列表，不删除已下载的文件" onClick={onClear}>
+          <button type="button" title="只清空列表，不删除已下载的文件" onClick={onClear} disabled={downloads.length === 0}>
             清除记录
           </button>
         </div>
