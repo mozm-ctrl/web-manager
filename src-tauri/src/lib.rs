@@ -184,7 +184,7 @@ async fn purge_account_data(app: &AppHandle, account_id: Uuid) -> Result<(), Str
 async fn delete_accounts_data(app: &AppHandle, ids: Vec<Uuid>) {
     let state = app.state::<AppState>();
     for id in ids {
-        // A locked vault is cleaned up when it is next unlocked (see `merge_vault`).
+        // A locked vault is cleaned up when it is next unlocked (see `prune_vault`).
         let unlocked = {
             let mut slot = state.vault.lock().unwrap();
             slot.as_mut().and_then(|v| v.remove(&id).map(|_| v.clone()))
@@ -197,8 +197,10 @@ async fn delete_accounts_data(app: &AppHandle, ids: Vec<Uuid>) {
         if let Some(w) = app.get_webview_window(&peek_label(&id)) {
             let _ = w.close();
         }
-        if let Err(e) = credentials::delete(id) {
-            eprintln!("failed to delete saved login for account {id}: {e}");
+        if credentials::exists(id).unwrap_or(false) {
+            if let Err(e) = credentials::delete(id) {
+                eprintln!("failed to delete saved login for account {id}: {e}");
+            }
         }
         {
             let mut active = state.active.lock().unwrap();
@@ -925,9 +927,52 @@ fn credential_status(state: State<'_, AppState>, id: String) -> Result<Credentia
 fn get_credential(state: State<'_, AppState>, id: String) -> Result<Option<credentials::Credential>, String> {
     let id = parse_id(&id)?;
     unlock_vault(&state)?;
-    let c = state.vault.lock().unwrap().as_ref().and_then(|v| v.get(&id).cloned());
-    remember_login(&state, id, c.as_ref())?;
-    Ok(c)
+    let c = {
+        let mut slot = state.vault.lock().unwrap();
+        let vault = slot.as_mut().ok_or("钥匙串未解锁")?;
+        take_legacy(vault, id, legacy_login)?
+    };
+    if let Some(vault) = c.moved.then(|| state.vault.lock().unwrap().clone()).flatten() {
+        // Best effort: if this fails the old item is simply read again next time.
+        if let Err(e) = credentials::save_vault(&vault) {
+            eprintln!("failed to move saved login of account {id} into the vault: {e}");
+        }
+    }
+    remember_login(&state, id, c.login.as_ref())?;
+    Ok(c.login)
+}
+
+/// An account's item from before 0.9.0, if it has one. `exists` reads attributes
+/// only, so accounts without one never cause a prompt.
+fn legacy_login(id: Uuid) -> Result<Option<credentials::Credential>, String> {
+    if credentials::exists(id)? { credentials::get(id) } else { Ok(None) }
+}
+
+struct VaultRead {
+    login: Option<credentials::Credential>,
+    /// Taken from a pre-0.9.0 item just now; the vault needs saving.
+    moved: bool,
+}
+
+/// The account's login from the vault, or else from its pre-0.9.0 item, which is
+/// then kept in the vault. Old items are only read here, one account at a time when
+/// that account is opened: each asks for the Mac password separately (they were made
+/// by an older build), so reading all of them at unlock meant one prompt per account.
+fn take_legacy(
+    vault: &mut credentials::Vault,
+    id: Uuid,
+    legacy: impl FnOnce(Uuid) -> Result<Option<credentials::Credential>, String>,
+) -> Result<VaultRead, String> {
+    if let Some(c) = vault.get(&id) {
+        return Ok(VaultRead { login: Some(c.clone()), moved: false });
+    }
+    match legacy(id)?.filter(|c| !c.is_empty()) {
+        Some(c) => {
+            vault.insert(id, c.clone());
+            Ok(VaultRead { login: Some(c), moved: true })
+        }
+        None => Ok(VaultRead { login: None, moved: false }),
+    }
 }
 
 /// Mirrors what dialogs show without unlocking: the username and whether a login exists.
@@ -944,8 +989,10 @@ fn remember_login(state: &AppState, id: Uuid, c: Option<&credentials::Credential
     state.save(&store)
 }
 
-/// Loads every saved login into memory, once per session (the only Keychain read
-/// that can prompt). Errors are not remembered, so a dismissed prompt can be retried.
+/// Loads every saved login into memory, once per session: the one Keychain read
+/// that can prompt, however many accounts there are. Nothing is written here, and
+/// pre-0.9.0 items are left alone until their account is opened (see `take_legacy`).
+/// Errors are not remembered, so a dismissed prompt can be retried.
 fn unlock_vault(state: &AppState) -> Result<(), String> {
     // Held throughout, so two windows asking at once still prompt only once.
     let mut slot = state.vault.lock().unwrap();
@@ -953,49 +1000,16 @@ fn unlock_vault(state: &AppState) -> Result<(), String> {
         return Ok(());
     }
     let ids = state.store.lock().unwrap().account_ids();
-    let stored = credentials::load_vault()?;
-    let (vault, migrated, changed) = merge_vault(stored, &ids, |id| {
-        if credentials::exists(id)? { credentials::get(id) } else { Ok(None) }
-    })?;
-    if changed {
-        credentials::save_vault(&vault)?;
-    }
-    // Only once they are safely in the vault.
-    for id in migrated {
-        if let Err(e) = credentials::delete(id) {
-            eprintln!("failed to remove old keychain item of account {id}: {e}");
-        }
-    }
+    let mut vault = credentials::load_vault()?;
+    prune_vault(&mut vault, &ids);
     *slot = Some(vault);
     Ok(())
 }
 
-/// Brings the stored vault up to date with the accounts that exist: logins of
-/// accounts deleted while it was locked are dropped, and accounts without one in
-/// the vault get theirs from `legacy` (pre-0.9.0 items). Returns the vault, the
-/// accounts whose legacy item was moved in, and whether anything changed.
-fn merge_vault(
-    mut vault: credentials::Vault,
-    ids: &[Uuid],
-    mut legacy: impl FnMut(Uuid) -> Result<Option<credentials::Credential>, String>,
-) -> Result<(credentials::Vault, Vec<Uuid>, bool), String> {
-    let before = vault.len();
+/// Drops logins of accounts deleted while the vault was locked (and empty ones).
+/// Kept in memory only; written with the next save.
+fn prune_vault(vault: &mut credentials::Vault, ids: &[Uuid]) {
     vault.retain(|id, c| ids.contains(id) && !c.is_empty());
-    let mut changed = vault.len() != before;
-    let mut migrated = vec![];
-    for &id in ids {
-        if vault.contains_key(&id) {
-            continue;
-        }
-        if let Some(c) = legacy(id)? {
-            if !c.is_empty() {
-                vault.insert(id, c);
-            }
-            migrated.push(id);
-            changed = true;
-        }
-    }
-    Ok((vault, migrated, changed))
 }
 
 #[cfg(test)]
@@ -1008,45 +1022,56 @@ mod tests {
     }
 
     #[test]
-    fn vault_takes_in_legacy_logins_once() {
+    fn legacy_items_are_read_one_account_at_a_time() {
         let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-        let mut stored = credentials::Vault::new();
-        stored.insert(a, cred("a"));
+        let mut vault = credentials::Vault::new();
+        vault.insert(a, cred("a"));
         let reads = Cell::new(0);
-        let (vault, migrated, changed) = merge_vault(stored, &[a, b, c], |id| {
+        let legacy = |id: Uuid| {
             reads.set(reads.get() + 1);
             Ok((id == b).then(|| cred("b")))
-        })
-        .unwrap();
-        // `a` is already in the vault: its legacy item is not even looked at.
-        assert_eq!(reads.get(), 2);
-        assert_eq!(migrated, vec![b]);
-        assert!(changed);
-        assert_eq!(vault[&a].username, "a");
-        assert_eq!(vault[&b].username, "b");
-        assert!(!vault.contains_key(&c));
+        };
 
-        // Next launch: nothing left to move, nothing to write.
-        let (_, migrated, changed) = merge_vault(vault, &[a, b, c], |_| Ok(None)).unwrap();
-        assert!(migrated.is_empty());
-        assert!(!changed);
+        // In the vault: the old item is not even looked at.
+        let r = take_legacy(&mut vault, a, legacy).unwrap();
+        assert_eq!(r.login.unwrap().username, "a");
+        assert!(!r.moved);
+        assert_eq!(reads.get(), 0);
+
+        // Opening b reads b's old item only, once, and keeps it in the vault.
+        let r = take_legacy(&mut vault, b, legacy).unwrap();
+        assert_eq!(r.login.unwrap().username, "b");
+        assert!(r.moved);
+        assert_eq!(reads.get(), 1);
+        let r = take_legacy(&mut vault, b, legacy).unwrap();
+        assert!(!r.moved);
+        assert_eq!(reads.get(), 1);
+
+        // No login anywhere.
+        let r = take_legacy(&mut vault, c, legacy).unwrap();
+        assert!(r.login.is_none() && !r.moved);
+        assert!(!vault.contains_key(&c));
     }
 
     #[test]
     fn vault_drops_deleted_accounts() {
         let (a, gone) = (Uuid::new_v4(), Uuid::new_v4());
-        let mut stored = credentials::Vault::new();
-        stored.insert(a, cred("a"));
-        stored.insert(gone, cred("x"));
-        let (vault, _, changed) = merge_vault(stored, &[a], |_| Ok(None)).unwrap();
-        assert!(changed);
+        let mut vault = credentials::Vault::new();
+        vault.insert(a, cred("a"));
+        vault.insert(gone, cred("x"));
+        prune_vault(&mut vault, &[a]);
         assert_eq!(vault.len(), 1);
+        assert!(vault.contains_key(&a));
     }
 
     #[test]
-    fn vault_unlock_error_is_reported() {
+    fn legacy_read_error_is_reported_and_retried() {
         let id = Uuid::new_v4();
-        assert!(merge_vault(credentials::Vault::new(), &[id], |_| Err("denied".into())).is_err());
+        let mut vault = credentials::Vault::new();
+        assert!(take_legacy(&mut vault, id, |_| Err("denied".into())).is_err());
+        assert!(vault.is_empty());
+        let r = take_legacy(&mut vault, id, |_| Ok(Some(cred("x")))).unwrap();
+        assert!(r.moved);
     }
 
     /// A fresh empty directory, removed when dropped.
@@ -1224,6 +1249,10 @@ fn set_credential(
         }
         credentials::save_vault(&next)?;
         *vault = next;
+    }
+    // Cleared: also remove a pre-0.9.0 item, or `take_legacy` would bring it back.
+    if credential.is_empty() && credentials::exists(id)? {
+        credentials::delete(id)?;
     }
     remember_login(&state, id, (!credential.is_empty()).then_some(&credential))
 }
