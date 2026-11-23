@@ -22,7 +22,6 @@ type DialogState =
   | { kind: "addSite" }
   | { kind: "editSite"; site: Site }
   | { kind: "addAccount"; site: Site }
-  | { kind: "renameAccount"; account: Account }
   | { kind: "credential"; account: Account; site: Site }
   | { kind: "confirm"; message: string; onConfirm: () => Promise<void> }
   /** The download list, opened from the toolbar's download button. */
@@ -382,14 +381,11 @@ function App() {
                         </button>
                         <button
                           className="icon"
-                          title="账号密码"
+                          title="账号密码 / 重命名"
                           aria-label={`账号密码 ${acc.name}`}
                           onClick={() => setDialog({ kind: "credential", account: acc, site })}
                         >
                           <Icon name="key" />
-                        </button>
-                        <button className="icon" title="重命名" aria-label={`重命名 ${acc.name}`} onClick={() => setDialog({ kind: "renameAccount", account: acc })}>
-                          <Icon name="edit" />
                         </button>
                         <button
                           className="icon danger"
@@ -797,12 +793,14 @@ function CredentialDialog({
 }) {
   // The username comes from sites.json, so it shows without a Keychain prompt. The
   // password is read from the Keychain only when needed (显示 / 复制 / 编辑). All
-  // saved logins share one Keychain item, so that asks for the Mac password at most
-  // once per launch, for every account at once.
+  // saved logins share one Keychain item, so macOS asks for the Mac password at most
+  // once to read it and once to change it per launch, for every account at once.
   const [cred, setCred] = useState<Credential>({ username: account.username ?? "", password: "", note: "" });
   const [unlocked, setUnlocked] = useState(false);
   // The account's home address (kept in sites.json, not the keychain); empty means the site's URL.
   const [address, setAddress] = useState(account.url ?? site.url);
+  // The account's display name in the sidebar (renamed here since 0.9.0).
+  const [name, setName] = useState(account.name);
   const [loaded, setLoaded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [reveal, setReveal] = useState(false);
@@ -869,6 +867,7 @@ function CredentialDialog({
   const save = async () => {
     try {
       await api.setCredential(account.id, cred);
+      if (name.trim() !== account.name) await api.renameAccount(account.id, name);
       const url = address.trim();
       await api.setAccountUrl(account.id, url === site.url ? "" : url);
       await onSaved();
@@ -934,6 +933,21 @@ function CredentialDialog({
         <h3>「{account.name}」的账号密码</h3>
         {loaded && (
           <>
+            {editing && (
+              <label>
+                备注名
+                <div className="field-row">
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="侧栏里显示的名字，如：工作号"
+                    aria-label="备注名"
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                </div>
+              </label>
+            )}
             {field("username", "账号", "用户名 / 邮箱 / 手机号")}
             {field("password", "密码", "密码", true)}
             <label>
@@ -953,7 +967,10 @@ function CredentialDialog({
           </>
         )}
         <p className="hint-text">
-          {message ?? "打开这个账号时进入「地址」里的网址。密码只保存在系统钥匙串里，点「显示」时才读取。"}
+          {message ??
+            (editing
+              ? "「备注名」是侧栏里显示的名字；打开这个账号时进入「地址」里的网址。"
+              : "点「编辑」可以修改备注名、账号密码和地址。密码只保存在系统钥匙串里，点「显示」时才读取。")}
         </p>
         <div className="dialog-actions">
           {editing ? (
@@ -1089,8 +1106,6 @@ function Dialog({
     switch (state.kind) {
       case "editSite":
         return { name: state.site.name, url: state.site.url };
-      case "renameAccount":
-        return { name: state.account.name, url: "" };
       default:
         return { name: "", url: "" };
     }
@@ -1110,9 +1125,6 @@ function Dialog({
         case "addAccount":
           await api.addAccount(state.site.id, name);
           break;
-        case "renameAccount":
-          await api.renameAccount(state.account.id, name);
-          break;
         case "confirm":
           await state.onConfirm();
           break;
@@ -1126,7 +1138,6 @@ function Dialog({
     addSite: "添加网站",
     editSite: "编辑网站",
     addAccount: state.kind === "addAccount" ? `给「${state.site.name}」新增账号` : "",
-    renameAccount: "重命名账号",
     confirm: "确认删除",
   }[state.kind];
 
@@ -1146,7 +1157,7 @@ function Dialog({
         ) : (
           <>
             <label>
-              {state.kind === "addAccount" || state.kind === "renameAccount" ? "备注名" : "名称"}
+              {state.kind === "addAccount" ? "备注名" : "名称"}
               <input
                 autoFocus
                 value={name}
