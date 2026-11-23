@@ -16,6 +16,10 @@ pub struct Account {
     /// the Keychain. The password itself only ever lives in the Keychain.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// Whether a login is saved in the Keychain vault, so dialogs can tell without
+    /// unlocking it.
+    #[serde(default, rename = "hasLogin", skip_serializing_if = "std::ops::Not::not")]
+    pub has_login: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +63,10 @@ impl Store {
 
     pub fn site_mut(&mut self, id: Uuid) -> Option<&mut Site> {
         self.sites.iter_mut().find(|s| s.id == id)
+    }
+
+    pub fn account_ids(&self) -> Vec<Uuid> {
+        self.sites.iter().flat_map(|s| s.accounts.iter().map(|a| a.id)).collect()
     }
 
     pub fn account_mut(&mut self, id: Uuid) -> Option<&mut Account> {

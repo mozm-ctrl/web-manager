@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Only the local sidebar UI (webview \"main\") may call commands; account webviews load remote sites and get no IPC access.",
+  "description": "Only the local UI (webview \"main\" and the small credential windows \"peek-*\") may call commands; account webviews load remote sites and get no IPC access.",
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
@@ -13,6 +13,7 @@
     "process:allow-restart"
   ],
   "webviews": [
-    "main"
+    "main",
+    "peek-*"
   ]
 }

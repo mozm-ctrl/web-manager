@@ -91,6 +91,7 @@ export const api = {
   getCredential: (id: string) => invoke<Credential | null>("get_credential", { id }),
   setCredential: (id: string, credential: Credential) =>
     invoke<void>("set_credential", { id, credential }),
+  openCredentialPeek: (id: string) => invoke<void>("open_credential_peek", { id }),
   openDownload: (path: string) => invoke<void>("open_download", { path }),
   revealDownload: (path: string) => invoke<void>("reveal_download", { path }),
 };

@@ -374,6 +374,14 @@ function App() {
                       <span className="row-actions" onClick={(e) => e.stopPropagation()}>
                         <button
                           className="icon"
+                          title="小窗查看账号密码（可拖动，方便复制）"
+                          aria-label={`小窗查看账号密码 ${acc.name}`}
+                          onClick={() => run(() => api.openCredentialPeek(acc.id))}
+                        >
+                          <Icon name="eye" />
+                        </button>
+                        <button
+                          className="icon"
                           title="账号密码"
                           aria-label={`账号密码 ${acc.name}`}
                           onClick={() => setDialog({ kind: "credential", account: acc, site })}
@@ -788,8 +796,9 @@ function CredentialDialog({
   onSaved: () => Promise<void>;
 }) {
   // The username comes from sites.json, so it shows without a Keychain prompt. The
-  // password is read from the Keychain only when needed (显示 / 复制 / 编辑), which asks
-  // for the Mac password at most once per account until the app quits.
+  // password is read from the Keychain only when needed (显示 / 复制 / 编辑). All
+  // saved logins share one Keychain item, so that asks for the Mac password at most
+  // once per launch, for every account at once.
   const [cred, setCred] = useState<Credential>({ username: account.username ?? "", password: "", note: "" });
   const [unlocked, setUnlocked] = useState(false);
   // The account's home address (kept in sites.json, not the keychain); empty means the site's URL.

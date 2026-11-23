@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, State, Url, Webview,
-    WebviewBuilder, WebviewUrl,
+    WebviewBuilder, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
@@ -43,9 +43,9 @@ struct AppState {
     /// True while a dialog is open: the sidebar UI is raised above the account
     /// webviews instead of below them (see `set_overlay`).
     overlay: Mutex<bool>,
-    /// Saved logins already read this session, so the Keychain prompt appears at most
-    /// once per account until the app quits. Memory only; never written anywhere.
-    credential_cache: Mutex<HashMap<Uuid, Option<credentials::Credential>>>,
+    /// Every saved login, once the Keychain vault was unlocked this session (at most
+    /// one password prompt per launch). Memory only; never written anywhere else.
+    vault: Mutex<Option<credentials::Vault>>,
     /// Downloads started but not yet finished, by URL (see `handle_download`).
     downloads: Mutex<DownloadQueue>,
 }
@@ -184,7 +184,19 @@ async fn purge_account_data(app: &AppHandle, account_id: Uuid) -> Result<(), Str
 async fn delete_accounts_data(app: &AppHandle, ids: Vec<Uuid>) {
     let state = app.state::<AppState>();
     for id in ids {
-        state.credential_cache.lock().unwrap().remove(&id);
+        // A locked vault is cleaned up when it is next unlocked (see `merge_vault`).
+        let unlocked = {
+            let mut slot = state.vault.lock().unwrap();
+            slot.as_mut().and_then(|v| v.remove(&id).map(|_| v.clone()))
+        };
+        if let Some(vault) = unlocked {
+            if let Err(e) = credentials::save_vault(&vault) {
+                eprintln!("failed to remove saved login of account {id}: {e}");
+            }
+        }
+        if let Some(w) = app.get_webview_window(&peek_label(&id)) {
+            let _ = w.close();
+        }
         if let Err(e) = credentials::delete(id) {
             eprintln!("failed to delete saved login for account {id}: {e}");
         }
@@ -678,6 +690,7 @@ fn add_account(state: State<'_, AppState>, site_id: String, name: String) -> Res
         },
         url: None,
         username: None,
+        has_login: false,
     };
     site.accounts.push(account.clone());
     state.save(&store)?;
@@ -891,54 +904,98 @@ fn navigate_tab(app: AppHandle, tab_id: String, action: String, url: Option<Stri
 #[serde(rename_all = "camelCase")]
 struct CredentialStatus {
     saved: bool,
-    /// Set once the login was read this session.
+    /// Set once the vault was unlocked this session.
     credential: Option<credentials::Credential>,
 }
 
 #[tauri::command]
 fn credential_status(state: State<'_, AppState>, id: String) -> Result<CredentialStatus, String> {
     let id = parse_id(&id)?;
-    if let Some(c) = state.credential_cache.lock().unwrap().get(&id) {
-        return Ok(CredentialStatus { saved: c.is_some(), credential: c.clone() });
+    if let Some(vault) = state.vault.lock().unwrap().as_ref() {
+        let c = vault.get(&id).cloned();
+        return Ok(CredentialStatus { saved: c.is_some(), credential: c });
     }
-    Ok(CredentialStatus { saved: credentials::exists(id)?, credential: None })
+    let flagged = state.store.lock().unwrap().account_mut(id).is_some_and(|a| a.has_login);
+    Ok(CredentialStatus { saved: flagged || credentials::exists(id)?, credential: None })
 }
 
-/// Reads the saved login, which may ask for the Mac password (once per account per session).
+/// Reads the saved login. The first call of a session unlocks the Keychain vault,
+/// which may ask for the Mac password once; every account is readable afterwards.
 #[tauri::command]
 fn get_credential(state: State<'_, AppState>, id: String) -> Result<Option<credentials::Credential>, String> {
     let id = parse_id(&id)?;
-    let c = cached_credential(&state.credential_cache, id, credentials::get)?;
-    if let Some(c) = &c {
-        remember_username(&state, id, &c.username)?;
-    }
+    unlock_vault(&state)?;
+    let c = state.vault.lock().unwrap().as_ref().and_then(|v| v.get(&id).cloned());
+    remember_login(&state, id, c.as_ref())?;
     Ok(c)
 }
 
-fn remember_username(state: &AppState, id: Uuid, username: &str) -> Result<(), String> {
-    let username = (!username.is_empty()).then(|| username.to_string());
+/// Mirrors what dialogs show without unlocking: the username and whether a login exists.
+fn remember_login(state: &AppState, id: Uuid, c: Option<&credentials::Credential>) -> Result<(), String> {
+    let username = c.map(|c| c.username.clone()).filter(|u| !u.is_empty());
+    let has_login = c.is_some();
     let mut store = state.store.lock().unwrap();
     let Some(acc) = store.account_mut(id) else { return Ok(()) };
-    if acc.username == username {
+    if acc.username == username && acc.has_login == has_login {
         return Ok(());
     }
     acc.username = username;
+    acc.has_login = has_login;
     state.save(&store)
 }
 
-/// Reads through `cache`, so `read` (the Keychain) runs at most once per account.
-/// Errors are not cached: a dismissed Keychain prompt can be retried.
-fn cached_credential(
-    cache: &Mutex<HashMap<Uuid, Option<credentials::Credential>>>,
-    id: Uuid,
-    read: impl FnOnce(Uuid) -> Result<Option<credentials::Credential>, String>,
-) -> Result<Option<credentials::Credential>, String> {
-    if let Some(c) = cache.lock().unwrap().get(&id) {
-        return Ok(c.clone());
+/// Loads every saved login into memory, once per session (the only Keychain read
+/// that can prompt). Errors are not remembered, so a dismissed prompt can be retried.
+fn unlock_vault(state: &AppState) -> Result<(), String> {
+    // Held throughout, so two windows asking at once still prompt only once.
+    let mut slot = state.vault.lock().unwrap();
+    if slot.is_some() {
+        return Ok(());
     }
-    let c = read(id)?;
-    cache.lock().unwrap().insert(id, c.clone());
-    Ok(c)
+    let ids = state.store.lock().unwrap().account_ids();
+    let stored = credentials::load_vault()?;
+    let (vault, migrated, changed) = merge_vault(stored, &ids, |id| {
+        if credentials::exists(id)? { credentials::get(id) } else { Ok(None) }
+    })?;
+    if changed {
+        credentials::save_vault(&vault)?;
+    }
+    // Only once they are safely in the vault.
+    for id in migrated {
+        if let Err(e) = credentials::delete(id) {
+            eprintln!("failed to remove old keychain item of account {id}: {e}");
+        }
+    }
+    *slot = Some(vault);
+    Ok(())
+}
+
+/// Brings the stored vault up to date with the accounts that exist: logins of
+/// accounts deleted while it was locked are dropped, and accounts without one in
+/// the vault get theirs from `legacy` (pre-0.9.0 items). Returns the vault, the
+/// accounts whose legacy item was moved in, and whether anything changed.
+fn merge_vault(
+    mut vault: credentials::Vault,
+    ids: &[Uuid],
+    mut legacy: impl FnMut(Uuid) -> Result<Option<credentials::Credential>, String>,
+) -> Result<(credentials::Vault, Vec<Uuid>, bool), String> {
+    let before = vault.len();
+    vault.retain(|id, c| ids.contains(id) && !c.is_empty());
+    let mut changed = vault.len() != before;
+    let mut migrated = vec![];
+    for &id in ids {
+        if vault.contains_key(&id) {
+            continue;
+        }
+        if let Some(c) = legacy(id)? {
+            if !c.is_empty() {
+                vault.insert(id, c);
+            }
+            migrated.push(id);
+            changed = true;
+        }
+    }
+    Ok((vault, migrated, changed))
 }
 
 #[cfg(test)]
@@ -946,29 +1003,50 @@ mod tests {
     use super::*;
     use std::cell::Cell;
 
-    #[test]
-    fn credential_read_once_per_account() {
-        let cache = Mutex::new(HashMap::new());
-        let id = Uuid::new_v4();
-        let reads = Cell::new(0);
-        let read = |_| {
-            reads.set(reads.get() + 1);
-            Ok(Some(credentials::Credential { username: "u".into(), password: "p".into(), note: String::new() }))
-        };
-        for _ in 0..3 {
-            let c = cached_credential(&cache, id, read).unwrap().unwrap();
-            assert_eq!(c.username, "u");
-        }
-        assert_eq!(reads.get(), 1);
+    fn cred(u: &str) -> credentials::Credential {
+        credentials::Credential { username: u.into(), password: "p".into(), note: String::new() }
     }
 
     #[test]
-    fn credential_errors_are_retried() {
-        let cache = Mutex::new(HashMap::new());
+    fn vault_takes_in_legacy_logins_once() {
+        let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let mut stored = credentials::Vault::new();
+        stored.insert(a, cred("a"));
+        let reads = Cell::new(0);
+        let (vault, migrated, changed) = merge_vault(stored, &[a, b, c], |id| {
+            reads.set(reads.get() + 1);
+            Ok((id == b).then(|| cred("b")))
+        })
+        .unwrap();
+        // `a` is already in the vault: its legacy item is not even looked at.
+        assert_eq!(reads.get(), 2);
+        assert_eq!(migrated, vec![b]);
+        assert!(changed);
+        assert_eq!(vault[&a].username, "a");
+        assert_eq!(vault[&b].username, "b");
+        assert!(!vault.contains_key(&c));
+
+        // Next launch: nothing left to move, nothing to write.
+        let (_, migrated, changed) = merge_vault(vault, &[a, b, c], |_| Ok(None)).unwrap();
+        assert!(migrated.is_empty());
+        assert!(!changed);
+    }
+
+    #[test]
+    fn vault_drops_deleted_accounts() {
+        let (a, gone) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut stored = credentials::Vault::new();
+        stored.insert(a, cred("a"));
+        stored.insert(gone, cred("x"));
+        let (vault, _, changed) = merge_vault(stored, &[a], |_| Ok(None)).unwrap();
+        assert!(changed);
+        assert_eq!(vault.len(), 1);
+    }
+
+    #[test]
+    fn vault_unlock_error_is_reported() {
         let id = Uuid::new_v4();
-        assert!(cached_credential(&cache, id, |_| Err("denied".into())).is_err());
-        let c = cached_credential(&cache, id, |_| Ok(None)).unwrap();
-        assert!(c.is_none());
+        assert!(merge_vault(credentials::Vault::new(), &[id], |_| Err("denied".into())).is_err());
     }
 
     /// A fresh empty directory, removed when dropped.
@@ -1134,10 +1212,59 @@ fn set_credential(
 ) -> Result<(), String> {
     let id = parse_id(&id)?;
     state.store.lock().unwrap().account_mut(id).ok_or("账号不存在")?;
-    credentials::set(id, &credential)?;
-    remember_username(&state, id, &credential.username)?;
-    let empty = credential.username.is_empty() && credential.password.is_empty() && credential.note.is_empty();
-    state.credential_cache.lock().unwrap().insert(id, (!empty).then_some(credential));
+    unlock_vault(&state)?;
+    {
+        let mut slot = state.vault.lock().unwrap();
+        let vault = slot.as_mut().ok_or("钥匙串未解锁")?;
+        let mut next = vault.clone();
+        if credential.is_empty() {
+            next.remove(&id);
+        } else {
+            next.insert(id, credential.clone());
+        }
+        credentials::save_vault(&next)?;
+        *vault = next;
+    }
+    remember_login(&state, id, (!credential.is_empty()).then_some(&credential))
+}
+
+fn peek_label(account_id: &Uuid) -> String {
+    format!("peek-{}", account_id.simple())
+}
+
+/// Opens (or brings forward) a small window showing an account's saved login with
+/// copy buttons. It is a window of its own, so it floats above the page, can be
+/// dragged anywhere, and the page's login form stays clickable while it is open.
+#[tauri::command]
+async fn open_credential_peek(app: AppHandle, id: String) -> Result<(), String> {
+    let account_id = parse_id(&id)?;
+    let title = {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().unwrap();
+        let site = store
+            .sites
+            .iter()
+            .find(|s| s.accounts.iter().any(|a| a.id == account_id))
+            .ok_or("账号不存在")?;
+        let acc = site.accounts.iter().find(|a| a.id == account_id).ok_or("账号不存在")?;
+        format!("{} · {}", site.name, acc.name)
+    };
+    let label = peek_label(&account_id);
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.unminimize();
+        let _ = w.show();
+        return w.set_focus().map_err(|e| e.to_string());
+    }
+    let url = format!("index.html?peek={account_id}");
+    WebviewWindowBuilder::new(&app, label, WebviewUrl::App(url.into()))
+        .title(title)
+        .inner_size(320.0, 150.0)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .always_on_top(true)
+        .build()
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1163,7 +1290,7 @@ pub fn run() {
                 tabs: Mutex::new(HashMap::new()),
                 bounds: Mutex::new(Bounds::default()),
                 overlay: Mutex::new(false),
-                credential_cache: Mutex::new(HashMap::new()),
+                vault: Mutex::new(None),
                 downloads: Mutex::new(HashMap::new()),
             });
 
@@ -1192,6 +1319,13 @@ pub fn run() {
             }
             Ok(())
         })
+        // Small credential windows must not keep the app running once the main
+        // window is gone.
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, WindowEvent::Destroyed) {
+                window.app_handle().exit(0);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             list_sites,
             add_site,
@@ -1214,6 +1348,7 @@ pub fn run() {
             credential_status,
             open_download,
             reveal_download,
+            open_credential_peek,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
