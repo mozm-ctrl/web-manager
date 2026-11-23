@@ -5187,7 +5187,7 @@ dependencies = [
 
 [[package]]
 name = "web-manager"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "keyring",
  "objc2-app-kit",
