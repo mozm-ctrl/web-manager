@@ -933,21 +933,20 @@ function CredentialDialog({
         <h3>「{account.name}」的账号密码</h3>
         {loaded && (
           <>
-            {editing && (
-              <label>
-                备注名
-                <div className="field-row">
-                  <input
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="侧栏里显示的名字，如：工作号"
-                    aria-label="备注名"
-                    spellCheck={false}
-                    autoComplete="off"
-                  />
-                </div>
-              </label>
-            )}
+            <label>
+              备注名
+              <div className="field-row">
+                <input
+                  value={name}
+                  readOnly={!editing}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder={editing ? "侧栏里显示的名字，如：工作号" : ""}
+                  aria-label="备注名"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </div>
+            </label>
             {field("username", "账号", "用户名 / 邮箱 / 手机号")}
             {field("password", "密码", "密码", true)}
             <label>
