@@ -862,6 +862,64 @@ fn raise_ui(app: &AppHandle, top: bool) {
     });
 }
 
+/// WKWebView bug (tauri-apps/wry#1763): the sidebar UI webview spans the whole window
+/// under the account pages, and both webviews keep setting the mouse cursor while it
+/// moves over a page, so it flickers between e.g. the page's hand and the UI's arrow.
+/// Whenever the mouse moves, tell the UI webview to ignore mouse moves if the view
+/// under the pointer is not part of it (an account page, or nothing). While a dialog
+/// raises the UI above the pages, the pointer is over the UI and it works as usual.
+#[cfg(target_os = "macos")]
+fn fix_cursor_flicker(app: &AppHandle) {
+    use block2::RcBlock;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyObject, Bool, NSObjectProtocol};
+    use objc2::{msg_send, sel};
+    use objc2_app_kit::{NSEvent, NSEventMask, NSView};
+    use std::cell::Cell;
+    use std::ptr::NonNull;
+
+    let Some(main) = app.get_webview("main") else { return };
+    let _ = main.with_webview(|platform| {
+        // SAFETY: on macOS `inner()` is the WKWebView, and this runs on the main thread.
+        let Some(ui) = (unsafe { Retained::retain(platform.inner().cast::<NSView>()) }) else { return };
+        // Private WKWebView switch; do nothing if a future WebKit drops it.
+        let ignore_sel = sel!(_setIgnoresMouseMoveEvents:);
+        if !ui.respondsToSelector(ignore_sel) {
+            eprintln!("WKWebView has no _setIgnoresMouseMoveEvents:, cursor flicker fix disabled");
+            return;
+        }
+        let ignoring = Cell::new(false);
+        let handler = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit passes a valid event; local monitors run on the main thread.
+            let ev = unsafe { event.as_ref() };
+            let ui_window = ui.window();
+            let same_window = match (unsafe { ev.window(objc2::MainThreadMarker::new_unchecked()) }, &ui_window) {
+                (Some(a), Some(b)) => Retained::as_ptr(&a) == Retained::as_ptr(b),
+                _ => false,
+            };
+            if same_window {
+                let over_ui = ui_window
+                    .and_then(|w| w.contentView())
+                    // The content view's superview uses window coordinates.
+                    .and_then(|content| content.hitTest(ev.locationInWindow()))
+                    .is_some_and(|hit| hit.isDescendantOf(&ui));
+                if ignoring.get() == over_ui {
+                    ignoring.set(!over_ui);
+                    // SAFETY: checked above that the selector exists; it takes a BOOL.
+                    let _: () = unsafe { msg_send![&*ui, _setIgnoresMouseMoveEvents: Bool::new(!over_ui)] };
+                }
+            }
+            event.as_ptr()
+        });
+        let mask = NSEventMask::MouseMoved | NSEventMask::MouseEntered;
+        // SAFETY: the handler returns the event it was given, unchanged.
+        let monitor: Option<Retained<AnyObject>> =
+            unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &handler) };
+        // Kept for the life of the app.
+        std::mem::forget(monitor);
+    });
+}
+
 /// Other platforms keep hiding the page behind dialogs.
 #[cfg(not(target_os = "macos"))]
 fn raise_ui(app: &AppHandle, top: bool) {
@@ -1329,6 +1387,8 @@ pub fn run() {
             if let Some(main) = app.get_webview("main") {
                 main.set_background_color(Some(tauri::webview::Color(0, 0, 0, 0)))?;
             }
+            #[cfg(target_os = "macos")]
+            fix_cursor_flicker(app.handle());
 
             // Retry data deletions that failed last time (e.g. files locked on Windows).
             if !pending.is_empty() {

@@ -1,6 +1,6 @@
 [package]
 name = "web-manager"
-version = "0.9.2"
+version = "0.9.3"
 description = "Multi-site, multi-account web manager"
 authors = ["mozm-ctrl"]
 edition = "2024"
@@ -35,7 +35,10 @@ serde_json = "1"
 # Checks whether a saved login exists without reading it (no Keychain prompt).
 security-framework = "3"
 # Raises the sidebar UI above the account webviews while a dialog is open (see `raise_ui`).
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSGraphics"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSResponder", "NSView", "NSGraphics", "NSEvent", "NSWindow"] }
+# Stops the sidebar UI from fighting the page over the mouse cursor (see `fix_cursor_flicker`).
+objc2 = "0.6"
+block2 = "0.6"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
