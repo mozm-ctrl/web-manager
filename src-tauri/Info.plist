@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Account pages are ordinary websites, and some redirect to plain http (e.g.
+	     https://docs.opentoken.io/enterprise-api -> http://.../enterprise-api/).
+	     App Transport Security blocks such loads silently, so the click does nothing.
+	     Let web content load http like Safari does; the app's own requests (updater)
+	     keep the default ATS rules. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
