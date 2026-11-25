@@ -363,6 +363,13 @@ fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid,
     #[cfg(target_os = "macos")]
     if let Some(wv) = app.get_webview(&label) {
         keep_inspector_undocked(app, &wv);
+        // Patch wry's WKWebView subclass, taken from a real account page (idempotent).
+        let _ = wv.with_webview(|platform| {
+            // SAFETY: on macOS `inner()` is the WKWebView; this runs on the main thread.
+            if let Some(page) = unsafe { platform.inner().cast::<objc2::runtime::AnyObject>().as_ref() } {
+                rename_inspect_menu_item(page.class());
+            }
+        });
     }
 
     {
@@ -942,10 +949,10 @@ fn inspector_in_own_window() {
 }
 
 /// The inspector's own dock buttons still dock it into the main window, with the same
-/// broken layout as above. Whenever an account page's frame changes (docking resizes
-/// it), check shortly afterwards whether its inspector now sits in the page's window;
-/// if so, send the inspector back to its own window and put the page back where the
-/// UI wants it.
+/// broken layout as above, and WebKit also stretches the page over the whole window
+/// when a docked inspector closes (e.g. in full screen). Whenever an account page's
+/// frame changes, check shortly afterwards: send a docked inspector back to its own
+/// window, and put the page back where the UI wants it.
 #[cfg(target_os = "macos")]
 fn keep_inspector_undocked(app: &AppHandle, wv: &tauri::Webview) {
     use block2::RcBlock;
@@ -1007,20 +1014,78 @@ fn undock_inspector(app: &AppHandle, label: &str) {
         let inspector: Option<Retained<AnyObject>> = unsafe { msg_send![&*page, _inspector] };
         let Some(inspector) = inspector else { return };
         let visible: Bool = unsafe { msg_send![&*inspector, isVisible] };
-        if !visible.as_bool() {
-            return;
-        }
         let front: Option<Retained<NSView>> = unsafe { msg_send![&*inspector, inspectorWebView] };
-        let docked = match (front.and_then(|f| f.window()), page.window()) {
-            (Some(a), Some(b)) => Retained::as_ptr(&a) == Retained::as_ptr(&b),
-            _ => false,
-        };
+        let docked = visible.as_bool()
+            && match (front.and_then(|f| f.window()), page.window()) {
+                (Some(a), Some(b)) => Retained::as_ptr(&a) == Retained::as_ptr(&b),
+                _ => false,
+            };
         if docked {
             let _: () = unsafe { msg_send![&*inspector, detach] };
-            let bounds = *app.state::<AppState>().bounds.lock().unwrap();
-            let _ = handle.set_bounds(rect(bounds));
         }
+        // Setting the same frame again posts no frame-change notification, so this
+        // does not loop.
+        let bounds = *app.state::<AppState>().bounds.lock().unwrap();
+        let _ = handle.set_bounds(rect(bounds));
     });
+}
+
+/// Renames WebKit's 「Inspect Element」 context-menu item to 「Inspect」. wry's WKWebView
+/// subclass (`wry`) does not implement `willOpenMenu:withEvent:`, so add one that calls
+/// WKWebView's and then retitles the item WebKit tags as the inspector entry.
+#[cfg(target_os = "macos")]
+fn rename_inspect_menu_item(wry: &objc2::runtime::AnyClass) {
+    use objc2::ffi::class_addMethod;
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+    use objc2::sel;
+    use objc2_foundation::NSString;
+    use std::sync::OnceLock;
+
+    type WillOpen = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject);
+    static ORIGINAL: OnceLock<WillOpen> = OnceLock::new();
+
+    unsafe extern "C-unwind" fn will_open(this: *mut AnyObject, cmd: Sel, menu: *mut AnyObject, event: *mut AnyObject) {
+        if let Some(original) = ORIGINAL.get() {
+            // SAFETY: WKWebView's own implementation, with the arguments AppKit gave us.
+            unsafe { original(this, cmd, menu, event) };
+        }
+        // SAFETY: AppKit passes the NSMenu about to open; all calls are NSMenu /
+        // NSMenuItem API on the main thread.
+        let Some(menu) = (unsafe { menu.as_ref() }) else { return };
+        let count: isize = unsafe { msg_send![menu, numberOfItems] };
+        for i in 0..count {
+            let item: Option<Retained<AnyObject>> = unsafe { msg_send![menu, itemAtIndex: i] };
+            let Some(item) = item else { continue };
+            let id: Option<Retained<NSString>> = unsafe { msg_send![&*item, identifier] };
+            if id.is_some_and(|id| id.to_string() == "WKMenuItemIdentifierInspectElement") {
+                let _: () = unsafe { msg_send![&*item, setTitle: &*NSString::from_str("Inspect")] };
+            }
+        }
+    }
+
+    let sel = sel!(willOpenMenu:withEvent:);
+    // Key-value observing swaps the page's class for an NSKVONotifying_ subclass; patch
+    // the real one underneath so every account page gets it.
+    let wry = match wry.name().to_bytes().starts_with(b"NSKVONotifying_") {
+        true => wry.superclass().unwrap_or(wry),
+        false => wry,
+    };
+    let Some(wk) = AnyClass::get(c"WKWebView") else { return };
+    let Some(method) = wk.instance_method(sel) else { return };
+    // SAFETY: WKWebView's willOpenMenu:withEvent: has the signature `v@:@@`.
+    let original: WillOpen = unsafe { std::mem::transmute::<Imp, WillOpen>(method.implementation()) };
+    if ORIGINAL.set(original).is_err() {
+        return;
+    }
+
+    // SAFETY: `will_open` matches the method's type encoding; class_addMethod does
+    // nothing if WryWebView already implements the selector.
+    unsafe {
+        let imp = std::mem::transmute::<WillOpen, Imp>(will_open);
+        class_addMethod(wry as *const AnyClass as *mut AnyClass, sel, imp, c"v@:@@".as_ptr());
+    }
 }
 
 /// Other platforms keep hiding the page behind dialogs.
