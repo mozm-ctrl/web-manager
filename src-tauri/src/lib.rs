@@ -293,6 +293,10 @@ fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid,
     #[allow(unused_mut)]
     let mut builder = WebviewBuilder::new(&label, WebviewUrl::External(url.clone()))
         .user_agent(USER_AGENT)
+        // Right-click → 「检查元素」 opens Safari's Web Inspector for the page. Needs the
+        // `devtools` feature in release builds. Only account pages get it: the sidebar UI
+        // (tauri.conf.json) and the 👁 peek window turn it off explicitly.
+        .devtools(true)
         .initialization_script(NEW_TAB_SCRIPT)
         .on_navigation(move |url| {
             let Some(rest) = url.as_str().strip_prefix(NEW_TAB_PREFIX) else {
@@ -356,6 +360,10 @@ fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid,
             LogicalSize::new(b.width.max(1.0), b.height.max(1.0)),
         )
         .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    if let Some(wv) = app.get_webview(&label) {
+        keep_inspector_undocked(app, &wv);
+    }
 
     {
         let mut tabs = state.tabs.lock().unwrap();
@@ -920,6 +928,101 @@ fn fix_cursor_flicker(app: &AppHandle) {
     });
 }
 
+/// Makes 「检查元素」 open the Web Inspector in its own window. Docked, WebKit lays the
+/// inspector out across the whole window and stretches the page over the sidebar,
+/// and the page stays that way after the inspector is closed. WebKit reads this
+/// app-defaults key when a page's inspector is first shown and writes it back when
+/// the user docks or undocks, so reset it on every launch, before any account page
+/// exists.
+#[cfg(target_os = "macos")]
+fn inspector_in_own_window() {
+    use objc2_foundation::{NSString, NSUserDefaults};
+    let key = NSString::from_str("__WebInspectorPageGroupLevel1__.WebKit2InspectorStartsAttached");
+    NSUserDefaults::standardUserDefaults().setBool_forKey(false, &key);
+}
+
+/// The inspector's own dock buttons still dock it into the main window, with the same
+/// broken layout as above. Whenever an account page's frame changes (docking resizes
+/// it), check shortly afterwards whether its inspector now sits in the page's window;
+/// if so, send the inspector back to its own window and put the page back where the
+/// UI wants it.
+#[cfg(target_os = "macos")]
+fn keep_inspector_undocked(app: &AppHandle, wv: &tauri::Webview) {
+    use block2::RcBlock;
+    use objc2::rc::Retained;
+    use objc2::runtime::NSObjectProtocol;
+    use objc2::sel;
+    use objc2_app_kit::{NSView, NSViewFrameDidChangeNotification};
+    use objc2_foundation::{NSNotification, NSNotificationCenter};
+    use std::ptr::NonNull;
+
+    let app = app.clone();
+    let label = wv.label().to_string();
+    let _ = wv.with_webview(move |platform| {
+        // SAFETY: on macOS `inner()` is the WKWebView, and this runs on the main thread.
+        let Some(page) = (unsafe { Retained::retain(platform.inner().cast::<NSView>()) }) else { return };
+        // Private WKWebView API; do nothing if a future WebKit drops it.
+        if !page.respondsToSelector(sel!(_inspector)) {
+            return;
+        }
+        page.setPostsFrameChangedNotifications(true);
+        let handler = RcBlock::new(move |_: NonNull<NSNotification>| {
+            // WebKit resizes the page before it moves the inspector into the window.
+            let app = app.clone();
+            let label = label.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                undock_inspector(&app, &label);
+            });
+        });
+        // SAFETY: the handler is Send-safe (it only clones handles and spawns a task).
+        let observer = unsafe {
+            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+                Some(NSViewFrameDidChangeNotification),
+                Some(&page),
+                None,
+                &handler,
+            )
+        };
+        // Kept for the life of the app; once the page is gone it never fires again.
+        std::mem::forget(observer);
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn undock_inspector(app: &AppHandle, label: &str) {
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2_app_kit::NSView;
+
+    let Some(wv) = app.get_webview(label) else { return };
+    let handle = wv.clone();
+    let app = app.clone();
+    let _ = wv.with_webview(move |platform| {
+        // SAFETY: on macOS `inner()` is the WKWebView, and this runs on the main thread;
+        // `keep_inspector_undocked` checked that it has `_inspector`, which returns an
+        // `_WKInspector` or nil.
+        let Some(page) = (unsafe { Retained::retain(platform.inner().cast::<NSView>()) }) else { return };
+        let inspector: Option<Retained<AnyObject>> = unsafe { msg_send![&*page, _inspector] };
+        let Some(inspector) = inspector else { return };
+        let visible: Bool = unsafe { msg_send![&*inspector, isVisible] };
+        if !visible.as_bool() {
+            return;
+        }
+        let front: Option<Retained<NSView>> = unsafe { msg_send![&*inspector, inspectorWebView] };
+        let docked = match (front.and_then(|f| f.window()), page.window()) {
+            (Some(a), Some(b)) => Retained::as_ptr(&a) == Retained::as_ptr(&b),
+            _ => false,
+        };
+        if docked {
+            let _: () = unsafe { msg_send![&*inspector, detach] };
+            let bounds = *app.state::<AppState>().bounds.lock().unwrap();
+            let _ = handle.set_bounds(rect(bounds));
+        }
+    });
+}
+
 /// Other platforms keep hiding the page behind dialogs.
 #[cfg(not(target_os = "macos"))]
 fn raise_ui(app: &AppHandle, top: bool) {
@@ -1350,6 +1453,7 @@ async fn open_credential_peek(app: AppHandle, id: String) -> Result<(), String> 
         .maximizable(false)
         .minimizable(false)
         .always_on_top(true)
+        .devtools(false)
         .build()
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -1389,6 +1493,8 @@ pub fn run() {
             }
             #[cfg(target_os = "macos")]
             fix_cursor_flicker(app.handle());
+            #[cfg(target_os = "macos")]
+            inspector_in_own_window();
 
             // Retry data deletions that failed last time (e.g. files locked on Windows).
             if !pending.is_empty() {

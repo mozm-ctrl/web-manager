@@ -1,6 +1,6 @@
 [package]
 name = "web-manager"
-version = "0.9.4"
+version = "0.9.5"
 description = "Multi-site, multi-account web manager"
 authors = ["mozm-ctrl"]
 edition = "2024"
@@ -18,7 +18,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["unstable"] }
+tauri = { version = "2", features = ["unstable", "devtools"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["time"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust"] }
@@ -38,6 +38,8 @@ security-framework = "3"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSResponder", "NSView", "NSGraphics", "NSEvent", "NSWindow"] }
 # Stops the sidebar UI from fighting the page over the mouse cursor (see `fix_cursor_flicker`).
 objc2 = "0.6"
+# Keeps the Web Inspector in its own window (see `inspector_in_own_window`, `keep_inspector_undocked`).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSString", "NSUserDefaults", "NSNotification", "NSObject"] }
 block2 = "0.6"
 
 
