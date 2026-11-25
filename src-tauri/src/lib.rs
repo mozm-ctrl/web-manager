@@ -118,7 +118,7 @@ fn close_account_tabs(app: &AppHandle, account_id: Uuid) {
     let removed = state.tabs.lock().unwrap().remove(&account_id);
     for tab in removed.map(|t| t.tabs).unwrap_or_default() {
         if let Some(wv) = tab_webview(app, &tab) {
-            let _ = wv.close();
+            close_tab_view(&wv);
         }
     }
 }
@@ -362,7 +362,7 @@ fn open_tab(app: &AppHandle, account_id: Uuid, url: Option<Url>) -> Result<Uuid,
         .map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
     if let Some(wv) = app.get_webview(&label) {
-        keep_inspector_undocked(app, &wv);
+        wrap_tab(&wv);
         // Patch wry's WKWebView subclass, taken from a real account page (idempotent).
         let _ = wv.with_webview(|platform| {
             // SAFETY: on macOS `inner()` is the WKWebView; this runs on the main thread.
@@ -622,10 +622,10 @@ fn apply_visibility(app: &AppHandle) {
         for tab in &t.tabs {
             if let Some(wv) = tab_webview(app, tab) {
                 if Some(*account_id) == active && t.active == Some(*tab) {
-                    let _ = wv.set_bounds(rect(*state.bounds.lock().unwrap()));
-                    let _ = wv.show();
+                    place_tab(&wv, *state.bounds.lock().unwrap());
+                    show_tab(&wv, true);
                 } else {
-                    let _ = wv.hide();
+                    show_tab(&wv, false);
                 }
             }
         }
@@ -818,7 +818,7 @@ fn close_tab(app: AppHandle, tab_id: String) -> Result<(), String> {
         }
     }
     if let Some(wv) = tab_webview(&app, &tab_id) {
-        let _ = wv.close();
+        close_tab_view(&wv);
     }
     emit_tabs(&app, account_id);
     apply_visibility(&app);
@@ -847,7 +847,7 @@ fn set_content_bounds(app: AppHandle, mut bounds: Bounds) {
     let tabs = state.tabs.lock().unwrap();
     for tab in tabs.values().flat_map(|t| t.tabs.iter()) {
         if let Some(wv) = tab_webview(&app, tab) {
-            let _ = wv.set_bounds(rect(bounds));
+            place_tab(&wv, bounds);
         }
     }
 }
@@ -935,99 +935,113 @@ fn fix_cursor_flicker(app: &AppHandle) {
     });
 }
 
-/// Makes 「检查元素」 open the Web Inspector in its own window. Docked, WebKit lays the
-/// inspector out across the whole window and stretches the page over the sidebar,
-/// and the page stays that way after the inspector is closed. WebKit reads this
-/// app-defaults key when a page's inspector is first shown and writes it back when
-/// the user docks or undocks, so reset it on every launch, before any account page
-/// exists.
+/// Marks the view `wrap_tab` puts around each account page.
 #[cfg(target_os = "macos")]
-fn inspector_in_own_window() {
-    use objc2_foundation::{NSString, NSUserDefaults};
-    let key = NSString::from_str("__WebInspectorPageGroupLevel1__.WebKit2InspectorStartsAttached");
-    NSUserDefaults::standardUserDefaults().setBool_forKey(false, &key);
+const TAB_CONTAINER_ID: &str = "WebManagerTabContainer";
+
+/// Puts an account page into its own container view, the size of the page area, and
+/// returns nothing if anything is missing. WebKit lays a docked Web Inspector out
+/// across the page's superview; with the page directly in the window's content view
+/// that is the whole window, so docking (or closing a docked inspector) stretched the
+/// page over the sidebar. Inside the container, docking left / bottom / right splits
+/// the page area only. The container is what `place_tab`, `show_tab` and
+/// `close_tab_view` move, show and remove from then on.
+#[cfg(target_os = "macos")]
+fn wrap_tab(wv: &tauri::Webview) {
+    use objc2::rc::Retained;
+    use objc2::{MainThreadMarker, MainThreadOnly, msg_send};
+    use objc2_app_kit::{NSAutoresizingMaskOptions, NSView, NSWindowOrderingMode};
+    use objc2_foundation::NSString;
+
+    let _ = wv.with_webview(|platform| {
+        // SAFETY: on macOS `inner()` is the WKWebView, and this runs on the main thread.
+        let Some(page) = (unsafe { Retained::retain(platform.inner().cast::<NSView>()) }) else { return };
+        let Some(parent) = (unsafe { page.superview() }) else { return };
+        let Some(mtm) = MainThreadMarker::new() else { return };
+        let container = NSView::initWithFrame(NSView::alloc(mtm), page.frame());
+        // SAFETY: NSView implements NSUserInterfaceItemIdentification.
+        let _: () = unsafe { msg_send![&*container, setIdentifier: &*NSString::from_str(TAB_CONTAINER_ID)] };
+        // Same as wry's child webviews: keep the distance to the top edge.
+        container.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
+        container.setHidden(page.isHidden());
+        parent.addSubview_positioned_relativeTo(&container, NSWindowOrderingMode::Below, Some(&page));
+        container.addSubview(&page);
+        page.setFrame(container.bounds());
+        page.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        page.setHidden(false);
+    });
 }
 
-/// The inspector's own dock buttons still dock it into the main window, with the same
-/// broken layout as above, and WebKit also stretches the page over the whole window
-/// when a docked inspector closes (e.g. in full screen). Whenever an account page's
-/// frame changes, check shortly afterwards: send a docked inspector back to its own
-/// window, and put the page back where the UI wants it.
+/// Runs `f` on the main thread with an account page's container (see `wrap_tab`), or
+/// with `None` if the page is not wrapped.
 #[cfg(target_os = "macos")]
-fn keep_inspector_undocked(app: &AppHandle, wv: &tauri::Webview) {
-    use block2::RcBlock;
+fn with_tab_container(
+    wv: &tauri::Webview,
+    f: impl FnOnce(Option<&objc2_app_kit::NSView>, &objc2_app_kit::NSView) + Send + 'static,
+) {
+    use objc2::msg_send;
     use objc2::rc::Retained;
-    use objc2::runtime::NSObjectProtocol;
-    use objc2::sel;
-    use objc2_app_kit::{NSView, NSViewFrameDidChangeNotification};
-    use objc2_foundation::{NSNotification, NSNotificationCenter};
-    use std::ptr::NonNull;
+    use objc2_app_kit::NSView;
+    use objc2_foundation::NSString;
 
-    let app = app.clone();
-    let label = wv.label().to_string();
     let _ = wv.with_webview(move |platform| {
         // SAFETY: on macOS `inner()` is the WKWebView, and this runs on the main thread.
         let Some(page) = (unsafe { Retained::retain(platform.inner().cast::<NSView>()) }) else { return };
-        // Private WKWebView API; do nothing if a future WebKit drops it.
-        if !page.respondsToSelector(sel!(_inspector)) {
-            return;
-        }
-        page.setPostsFrameChangedNotifications(true);
-        let handler = RcBlock::new(move |_: NonNull<NSNotification>| {
-            // WebKit resizes the page before it moves the inspector into the window.
-            let app = app.clone();
-            let label = label.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                undock_inspector(&app, &label);
-            });
+        let container = unsafe { page.superview() }.filter(|c| {
+            let id: Option<Retained<NSString>> = unsafe { msg_send![&**c, identifier] };
+            id.is_some_and(|id| id.to_string() == TAB_CONTAINER_ID)
         });
-        // SAFETY: the handler is Send-safe (it only clones handles and spawns a task).
-        let observer = unsafe {
-            NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
-                Some(NSViewFrameDidChangeNotification),
-                Some(&page),
-                None,
-                &handler,
-            )
-        };
-        // Kept for the life of the app; once the page is gone it never fires again.
-        std::mem::forget(observer);
+        f(container.as_deref(), &page);
     });
 }
 
-#[cfg(target_os = "macos")]
-fn undock_inspector(app: &AppHandle, label: &str) {
-    use objc2::msg_send;
-    use objc2::rc::Retained;
-    use objc2::runtime::{AnyObject, Bool};
-    use objc2_app_kit::NSView;
-
-    let Some(wv) = app.get_webview(label) else { return };
-    let handle = wv.clone();
-    let app = app.clone();
-    let _ = wv.with_webview(move |platform| {
-        // SAFETY: on macOS `inner()` is the WKWebView, and this runs on the main thread;
-        // `keep_inspector_undocked` checked that it has `_inspector`, which returns an
-        // `_WKInspector` or nil.
-        let Some(page) = (unsafe { Retained::retain(platform.inner().cast::<NSView>()) }) else { return };
-        let inspector: Option<Retained<AnyObject>> = unsafe { msg_send![&*page, _inspector] };
-        let Some(inspector) = inspector else { return };
-        let visible: Bool = unsafe { msg_send![&*inspector, isVisible] };
-        let front: Option<Retained<NSView>> = unsafe { msg_send![&*inspector, inspectorWebView] };
-        let docked = visible.as_bool()
-            && match (front.and_then(|f| f.window()), page.window()) {
-                (Some(a), Some(b)) => Retained::as_ptr(&a) == Retained::as_ptr(&b),
-                _ => false,
+/// Moves an account page to `b` (logical, top-left origin like `set_bounds`).
+fn place_tab(wv: &tauri::Webview, b: Bounds) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
+        let fallback = wv.clone();
+        with_tab_container(wv, move |container, _| {
+            let Some(container) = container else {
+                let _ = fallback.set_bounds(rect(b));
+                return;
             };
-        if docked {
-            let _: () = unsafe { msg_send![&*inspector, detach] };
-        }
-        // Setting the same frame again posts no frame-change notification, so this
-        // does not loop.
-        let bounds = *app.state::<AppState>().bounds.lock().unwrap();
-        let _ = handle.set_bounds(rect(bounds));
+            let Some(parent) = (unsafe { container.superview() }) else { return };
+            let (w, h) = (b.width.max(1.0), b.height.max(1.0));
+            let y = if parent.isFlipped() { b.y } else { parent.frame().size.height - b.y - h };
+            container.setFrame(NSRect::new(NSPoint::new(b.x, y), NSSize::new(w, h)));
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = wv.set_bounds(rect(b));
+    }
+}
+
+/// Shows or hides an account page.
+fn show_tab(wv: &tauri::Webview, visible: bool) {
+    #[cfg(target_os = "macos")]
+    with_tab_container(wv, move |container, page| match container {
+        Some(c) => c.setHidden(!visible),
+        None => page.setHidden(!visible),
     });
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = if visible { wv.show() } else { wv.hide() };
+    }
+}
+
+/// Closes an account page, and removes its container.
+fn close_tab_view(wv: &tauri::Webview) {
+    #[cfg(target_os = "macos")]
+    with_tab_container(wv, |container, _| {
+        if let Some(c) = container {
+            c.removeFromSuperview();
+        }
+    });
+    let _ = wv.close();
 }
 
 /// Renames WebKit's 「Inspect Element」 context-menu item to 「Inspect」. wry's WKWebView
@@ -1096,7 +1110,7 @@ fn raise_ui(app: &AppHandle, top: bool) {
     let tabs = state.tabs.lock().unwrap();
     let tab = active.and_then(|a| tabs.get(&a)).and_then(|t| t.active);
     if let Some(wv) = tab.and_then(|t| tab_webview(app, &t)) {
-        let _ = if top { wv.hide() } else { wv.show() };
+        show_tab(&wv, !top);
     }
 }
 
@@ -1558,8 +1572,6 @@ pub fn run() {
             }
             #[cfg(target_os = "macos")]
             fix_cursor_flicker(app.handle());
-            #[cfg(target_os = "macos")]
-            inspector_in_own_window();
 
             // Retry data deletions that failed last time (e.g. files locked on Windows).
             if !pending.is_empty() {
