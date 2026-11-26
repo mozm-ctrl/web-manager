@@ -43,35 +43,39 @@ const MAX_DOWNLOADS = 50;
 const DOWNLOAD_NOTICE_MS = 3000;
 
 
-/// Lets a dialog be dragged by its title. Returns the offset style for the dialog and
-/// the pointer handler for the title.
+/// Lets a dialog be moved like the 👁 window: press anywhere on its top strip (the
+/// title row, edge to edge) and drag. The cursor stays the normal arrow. Returns props
+/// for the dialog element.
 function useDrag() {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const onPointerDown = (e: React.PointerEvent<HTMLElement>) => {
     if (e.button !== 0) return;
+    const dialog = e.currentTarget;
+    const target = e.target as HTMLElement;
+    if (target.closest("input, textarea, select, button, a")) return;
+    // The strip ends just below the title.
+    const title = dialog.querySelector("h3");
+    const stripBottom = title ? title.getBoundingClientRect().bottom + 6 : dialog.getBoundingClientRect().top + 44;
+    if (e.clientY > stripBottom) return;
     e.preventDefault();
     const start = { x: e.clientX - offset.x, y: e.clientY - offset.y };
-    const el = e.currentTarget;
-    el.setPointerCapture(e.pointerId);
+    dialog.setPointerCapture(e.pointerId);
     const move = (ev: PointerEvent) => {
-      // Keep at least part of the title inside the window.
+      // Keep at least part of the strip inside the window.
       const x = Math.max(-window.innerWidth / 2 + 60, Math.min(window.innerWidth / 2 - 60, ev.clientX - start.x));
       const y = Math.max(-window.innerHeight / 2 + 20, Math.min(window.innerHeight / 2 - 20, ev.clientY - start.y));
       setOffset({ x, y });
     };
     const up = () => {
-      el.removeEventListener("pointermove", move);
-      el.removeEventListener("pointerup", up);
-      el.removeEventListener("pointercancel", up);
+      dialog.removeEventListener("pointermove", move);
+      dialog.removeEventListener("pointerup", up);
+      dialog.removeEventListener("pointercancel", up);
     };
-    el.addEventListener("pointermove", move);
-    el.addEventListener("pointerup", up);
-    el.addEventListener("pointercancel", up);
+    dialog.addEventListener("pointermove", move);
+    dialog.addEventListener("pointerup", up);
+    dialog.addEventListener("pointercancel", up);
   };
-  return {
-    style: { transform: `translate(${offset.x}px, ${offset.y}px)` },
-    handle: { onPointerDown, className: "drag-handle", title: "拖动可移动窗口" },
-  };
+  return { style: { transform: `translate(${offset.x}px, ${offset.y}px)` }, onPointerDown };
 }
 
 function App() {
@@ -764,8 +768,8 @@ function DownloadsDialog({
 
   return (
     <div className="backdrop downloads-backdrop" onClick={onClose}>
-      <div className="dialog downloads" role="dialog" aria-label="下载列表" style={drag.style} onClick={(e) => e.stopPropagation()}>
-        <h3 {...drag.handle}>下载</h3>
+      <div className="dialog downloads" role="dialog" aria-label="下载列表" style={drag.style} onPointerDown={drag.onPointerDown} onClick={(e) => e.stopPropagation()}>
+        <h3 className="drag-strip">下载</h3>
         {downloads.length === 0 && <p className="download-empty">还没有下载。网页里下载的文件会保存到「下载」文件夹，并显示在这里。</p>}
         <ul className="download-list">
           {downloads.map((d) => {
@@ -958,14 +962,14 @@ function CredentialDialog({
     <div className="backdrop" onClick={onClose}>
       <form
         className="dialog"
-        style={drag.style}
+        style={drag.style} onPointerDown={drag.onPointerDown}
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault();
           if (editing) save();
         }}
       >
-        <h3 {...drag.handle}>「{account.name}」的账号密码</h3>
+        <h3 className="drag-strip">「{account.name}」的账号密码</h3>
         {loaded && (
           <>
             <label>
@@ -1088,7 +1092,7 @@ function UpdateDialog({
     <div className="backdrop" onClick={close}>
       <form
         className="dialog"
-        style={drag.style}
+        style={drag.style} onPointerDown={drag.onPointerDown}
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault();
@@ -1096,7 +1100,7 @@ function UpdateDialog({
           else close();
         }}
       >
-        <h3 {...drag.handle}>{title}</h3>
+        <h3 className="drag-strip">{title}</h3>
         {update ? (
           <>
             <p>当前版本 {update.currentVersion}。更新后 app 会自动重启，网站、账号、登录状态和保存的密码都会保留。</p>
@@ -1182,14 +1186,14 @@ function Dialog({
     <div className="backdrop" onClick={onClose}>
       <form
         className="dialog"
-        style={drag.style}
+        style={drag.style} onPointerDown={drag.onPointerDown}
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
-        <h3 {...drag.handle}>{title}</h3>
+        <h3 className="drag-strip">{title}</h3>
         {state.kind === "confirm" ? (
           <p>{state.message}</p>
         ) : (

@@ -745,10 +745,9 @@ button.download-name:hover {
   word-break: break-all;
 }
 
-/* Dialog titles double as drag handles (see useDrag in App.tsx). */
-.dialog .drag-handle {
-  cursor: move;
+/* The title row is where a dialog is dragged from (see useDrag in App.tsx); no text
+   selection there, so a press-and-drag moves the dialog instead. */
+.dialog .drag-strip {
   user-select: none;
   -webkit-user-select: none;
-  touch-action: none;
 }
