@@ -42,6 +42,38 @@ const MAX_DOWNLOADS = 50;
 // How long 「已下载 …」 replaces the window title.
 const DOWNLOAD_NOTICE_MS = 3000;
 
+
+/// Lets a dialog be dragged by its title. Returns the offset style for the dialog and
+/// the pointer handler for the title.
+function useDrag() {
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const onPointerDown = (e: React.PointerEvent<HTMLElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const start = { x: e.clientX - offset.x, y: e.clientY - offset.y };
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      // Keep at least part of the title inside the window.
+      const x = Math.max(-window.innerWidth / 2 + 60, Math.min(window.innerWidth / 2 - 60, ev.clientX - start.x));
+      const y = Math.max(-window.innerHeight / 2 + 20, Math.min(window.innerHeight / 2 - 20, ev.clientY - start.y));
+      setOffset({ x, y });
+    };
+    const up = () => {
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+  };
+  return {
+    style: { transform: `translate(${offset.x}px, ${offset.y}px)` },
+    handle: { onPointerDown, className: "drag-handle", title: "拖动可移动窗口" },
+  };
+}
+
 function App() {
   const [sites, setSites] = useState<Site[]>([]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -704,6 +736,7 @@ function DownloadsDialog({
   onClose: () => void;
   onClear: () => void;
 }) {
+  const drag = useDrag();
   // Errors from opening / revealing, shown on that row (e.g. the file was deleted).
   const [errors, setErrors] = useState<Record<string, string>>({});
 
@@ -731,8 +764,8 @@ function DownloadsDialog({
 
   return (
     <div className="backdrop downloads-backdrop" onClick={onClose}>
-      <div className="dialog downloads" role="dialog" aria-label="下载列表" onClick={(e) => e.stopPropagation()}>
-        <h3>下载</h3>
+      <div className="dialog downloads" role="dialog" aria-label="下载列表" style={drag.style} onClick={(e) => e.stopPropagation()}>
+        <h3 {...drag.handle}>下载</h3>
         {downloads.length === 0 && <p className="download-empty">还没有下载。网页里下载的文件会保存到「下载」文件夹，并显示在这里。</p>}
         <ul className="download-list">
           {downloads.map((d) => {
@@ -791,6 +824,7 @@ function CredentialDialog({
   onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
+  const drag = useDrag();
   // The username comes from sites.json, so it shows without a Keychain prompt. The
   // password is read from the Keychain only when needed (显示 / 复制 / 编辑). All
   // saved logins share one Keychain item, so macOS asks for the Mac password at most
@@ -924,13 +958,14 @@ function CredentialDialog({
     <div className="backdrop" onClick={onClose}>
       <form
         className="dialog"
+        style={drag.style}
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault();
           if (editing) save();
         }}
       >
-        <h3>「{account.name}」的账号密码</h3>
+        <h3 {...drag.handle}>「{account.name}」的账号密码</h3>
         {loaded && (
           <>
             <label>
@@ -1013,6 +1048,7 @@ function UpdateDialog({
   version: string;
   onClose: () => void;
 }) {
+  const drag = useDrag();
   // Non-null while downloading / installing; the dialog cannot be dismissed then.
   const [progress, setProgress] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -1052,6 +1088,7 @@ function UpdateDialog({
     <div className="backdrop" onClick={close}>
       <form
         className="dialog"
+        style={drag.style}
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault();
@@ -1059,7 +1096,7 @@ function UpdateDialog({
           else close();
         }}
       >
-        <h3>{title}</h3>
+        <h3 {...drag.handle}>{title}</h3>
         {update ? (
           <>
             <p>当前版本 {update.currentVersion}。更新后 app 会自动重启，网站、账号、登录状态和保存的密码都会保留。</p>
@@ -1101,6 +1138,7 @@ function Dialog({
   onDone: () => Promise<void>;
   run: (fn: () => Promise<unknown>) => Promise<void>;
 }) {
+  const drag = useDrag();
   const initial = (() => {
     switch (state.kind) {
       case "editSite":
@@ -1144,13 +1182,14 @@ function Dialog({
     <div className="backdrop" onClick={onClose}>
       <form
         className="dialog"
+        style={drag.style}
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
-        <h3>{title}</h3>
+        <h3 {...drag.handle}>{title}</h3>
         {state.kind === "confirm" ? (
           <p>{state.message}</p>
         ) : (

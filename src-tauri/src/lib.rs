@@ -875,6 +875,33 @@ fn raise_ui(app: &AppHandle, top: bool) {
         // Re-adding a subview moves it without unloading it.
         parent.addSubview_positioned_relativeTo(view, order, None);
     });
+    // The account pages under a raised UI still get mouse moves through their tracking
+    // areas and keep setting their own cursor (e.g. a text I-beam), so the cursor over
+    // a dialog flickered between theirs and the dialog's. Mute them while it is open.
+    let state = app.state::<AppState>();
+    let tabs = state.tabs.lock().unwrap();
+    for tab in tabs.values().flat_map(|t| t.tabs.iter()) {
+        if let Some(wv) = tab_webview(app, tab) {
+            ignore_mouse_moves(&wv, top);
+        }
+    }
+}
+
+/// Private WKWebView switch, also used by `fix_cursor_flicker`; does nothing if a
+/// future WebKit drops it.
+#[cfg(target_os = "macos")]
+fn ignore_mouse_moves(wv: &tauri::Webview, ignore: bool) {
+    use objc2::runtime::{Bool, NSObjectProtocol};
+    use objc2::{msg_send, sel};
+    use objc2_app_kit::NSView;
+    let _ = wv.with_webview(move |platform| {
+        // SAFETY: on macOS `inner()` is the WKWebView, and this runs on the main thread.
+        let view: &NSView = unsafe { &*platform.inner().cast() };
+        if view.respondsToSelector(sel!(_setIgnoresMouseMoveEvents:)) {
+            // SAFETY: checked above that the selector exists; it takes a BOOL.
+            let _: () = unsafe { msg_send![view, _setIgnoresMouseMoveEvents: Bool::new(ignore)] };
+        }
+    });
 }
 
 /// WKWebView bug (tauri-apps/wry#1763): the sidebar UI webview spans the whole window

@@ -744,3 +744,11 @@ button.download-name:hover {
   line-height: 1.5;
   word-break: break-all;
 }
+
+/* Dialog titles double as drag handles (see useDrag in App.tsx). */
+.dialog .drag-handle {
+  cursor: move;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
