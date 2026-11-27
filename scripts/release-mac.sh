@@ -1,9 +1,9 @@
 #!/bin/sh
 # Builds the universal macOS release and everything the auto-updater needs, into
 # release/v<version>/:
-#   Web.Manager_<v>_universal.dmg              installer for new users
-#   Web.Manager_<v>_universal.app.tar.gz       update package
-#   Web.Manager_<v>_universal.app.tar.gz.sig   its signature
+#   LvHu_<v>_universal.dmg              installer for new users
+#   LvHu_<v>_universal.app.tar.gz       update package
+#   LvHu_<v>_universal.app.tar.gz.sig   its signature
 #   latest.json                                what installed apps check for updates
 # Upload all four to the GitHub Release v<version> (not a draft, not a pre-release:
 # apps look at releases/latest/download/latest.json).
@@ -28,11 +28,13 @@ pnpm tauri build --target universal-apple-darwin
 
 bundle=src-tauri/target/universal-apple-darwin/release/bundle
 out=release/v$version
-name=Web.Manager_${version}_universal
+product=$(node -p 'require("./src-tauri/tauri.conf.json").productName')
+# ASCII file names: GitHub rewrites non-ASCII release asset names.
+name=LvHu_${version}_universal
 mkdir -p "$out"
-cp "$bundle/dmg/Web Manager_${version}_universal.dmg" "$out/$name.dmg"
-cp "$bundle/macos/Web Manager.app.tar.gz" "$out/$name.app.tar.gz"
-cp "$bundle/macos/Web Manager.app.tar.gz.sig" "$out/$name.app.tar.gz.sig"
+cp "$bundle/dmg/${product}_${version}_universal.dmg" "$out/$name.dmg"
+cp "$bundle/macos/$product.app.tar.gz" "$out/$name.app.tar.gz"
+cp "$bundle/macos/$product.app.tar.gz.sig" "$out/$name.app.tar.gz.sig"
 
 # One universal package serves both Apple silicon and Intel Macs.
 VERSION=$version NOTES=$notes URL="$repo/releases/download/v$version/$name.app.tar.gz" \

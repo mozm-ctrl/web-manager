@@ -516,7 +516,7 @@ function App() {
             <span className="window-title" data-tauri-drag-region title={page?.title ?? ""}>
               {active
                 ? `${active.site.name} · ${active.account.name}${page?.loading ? " · 加载中" : ""}`
-                : "网页管理器"}
+                : "绿狐"}
             </span>
           )}
         </div>
@@ -632,7 +632,7 @@ function App() {
         <div className="content" ref={contentRef}>
           {!active && (
             <div className="placeholder">
-              <h2>网页管理器</h2>
+              <h2>绿狐</h2>
               <p>每个账号使用独立的浏览器数据（Cookie、LocalStorage 等），同一网站可同时登录多个账号。</p>
             </div>
           )}
